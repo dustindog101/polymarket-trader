@@ -38,7 +38,7 @@ function parseJSONField<T>(val: any): T {
   return [] as unknown as T;
 }
 
-function normalizeMarket(raw: any): GammaMarket {
+export function normalizeMarket(raw: any): GammaMarket {
   const outcomes = parseJSONField<string[]>(raw.outcomes);
   const outcomePrices = parseJSONField<string[]>(raw.outcomePrices);
   const clobTokenIds = parseJSONField<string[]>(raw.clobTokenIds);

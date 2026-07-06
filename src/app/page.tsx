@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useCallback, useState } from 'react';
-import { Activity, Wallet, RefreshCw, ChevronLeft, ChevronRight, Zap, DollarSign } from 'lucide-react';
+import { Activity, Wallet, RefreshCw, ChevronLeft, ChevronRight, Zap, DollarSign, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -14,6 +14,7 @@ import { PriceChart } from '@/components/trading/PriceChart';
 import { OrderTicket } from '@/components/trading/OrderTicket';
 import { OpenOrders } from '@/components/trading/OpenOrders';
 import { FillHistory } from '@/components/trading/FillHistory';
+import { ProxyPanel } from '@/components/trading/ProxyPanel';
 
 export default function Home() {
   const {
@@ -34,6 +35,7 @@ export default function Home() {
   } = useTradingStore();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [showProxies, setShowProxies] = useState(false);
   const [balanceDisplay, setBalanceDisplay] = useState<string | null>(null);
 
   // Fetch markets on mount
@@ -201,6 +203,21 @@ export default function Home() {
                 <Button
                   variant="ghost"
                   size="sm"
+                  className={`h-7 text-xs gap-1.5 ${showProxies ? 'text-blue-400' : ''}`}
+                  onClick={() => setShowProxies(!showProxies)}
+                >
+                  <Shield className="h-3.5 w-3.5" />
+                  Proxies
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Proxy Management</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   className="h-7 text-xs gap-1.5"
                   onClick={fetchMarkets}
                 >
@@ -275,6 +292,13 @@ export default function Home() {
         {/* Order Ticket (floating dialog) */}
         {selectedMarket && useTradingStore.getState().showOrderTicket && (
           <OrderTicket />
+        )}
+
+        {/* Proxy Panel (bottom overlay) */}
+        {showProxies && (
+          <div className="absolute bottom-0 left-0 right-0 h-[320px] border-t border-blue-500/30 bg-zinc-950/95 backdrop-blur-sm z-50">
+            <ProxyPanel />
+          </div>
         )}
       </div>
     </div>

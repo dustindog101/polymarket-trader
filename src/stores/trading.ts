@@ -352,32 +352,54 @@ async function fetchPollingData(tokenIds: string[]) {
     }
   }
 
-  // Derive chart price points from orderbook best bid/ask midpoint
-  // The CLOB prices/midpoint API doesn't work reliably, so we compute from the book
+  // Get chart price data — use orderbook midpoint for markets with real books,
+  // or re-fetch from Gamma API for markets with empty books (e.g. BTC daily "above $X")
   const now = Date.now();
-  for (const tokenId of tokenIds) {
-    const book = store.orderbooks[tokenId];
-    if (!book) continue;
+  const market = store.selectedMarket;
 
-    const bestBid = book.bids.length > 0 ? Math.max(...book.bids.map(b => b.price)) : 0;
-    const bestAsk = book.asks.length > 0 ? Math.min(...book.asks.map(a => a.price)) : 0;
+  // Check if orderbooks have actual data
+  const hasBookData = tokenIds.some(tid => {
+    const book = store.orderbooks[tid];
+    return book && (book.bids.length > 0 || book.asks.length > 0);
+  });
 
-    // Use best bid if no asks, best ask if no bids, midpoint if both
-    let price = 0;
-    if (bestBid > 0 && bestAsk > 0) {
-      price = (bestBid + bestAsk) / 2;
-    } else if (bestBid > 0) {
-      price = bestBid;
-    } else if (bestAsk > 0) {
-      price = bestAsk;
+  if (hasBookData) {
+    // Use orderbook midpoint (works for popular/crypto markets with real CLOB books)
+    for (const tokenId of tokenIds) {
+      const book = store.orderbooks[tokenId];
+      if (!book) continue;
+      const bestBid = book.bids.length > 0 ? Math.max(...book.bids.map(b => b.price)) : 0;
+      const bestAsk = book.asks.length > 0 ? Math.min(...book.asks.map(a => a.price)) : 0;
+      let price = 0;
+      if (bestBid > 0 && bestAsk > 0) price = (bestBid + bestAsk) / 2;
+      else if (bestBid > 0) price = bestBid;
+      else if (bestAsk > 0) price = bestAsk;
+      if (price > 0) {
+        store.addPricePoint(tokenId, { price, timestamp: now, side: 'trade' });
+      }
     }
-
-    if (price > 0) {
-      store.addPricePoint(tokenId, {
-        price,
-        timestamp: now,
-        side: 'trade',
-      });
+  } else if (market?.conditionId) {
+    // BTC daily markets have empty CLOB books — poll Gamma for fresh prices
+    try {
+      const res = await fetch(`/api/polymarket/refresh?condition_id=${encodeURIComponent(market.conditionId)}`);
+      if (res.ok) {
+        const fresh = await res.json();
+        const prices = fresh.outcomePrices || [];
+        for (let i = 0; i < tokenIds.length && i < prices.length; i++) {
+          const price = parseFloat(prices[i]);
+          if (price > 0) {
+            store.addPricePoint(tokenIds[i], { price, timestamp: now, side: 'trade' });
+          }
+        }
+        // Update the market's stored prices too
+        if (fresh.outcomePrices && market) {
+          useTradingStore.setState({
+            selectedMarket: { ...market, outcomePrices: fresh.outcomePrices },
+          });
+        }
+      }
+    } catch {
+      // Silently ignore
     }
   }
 }
