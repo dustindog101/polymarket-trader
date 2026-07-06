@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.1.0] — 2026-07-07 — Serverless Polling + BTC Daily Markets
+
+### Key Changes
+- **Fully works on Vercel without WebSocket relay**: Added REST polling fallback (3s interval) for orderbook and chart data. No persistent server process needed.
+- **BTC Daily Markets tab**: New default "BTC" tab showing Bitcoin daily "above $X" markets — Polymarket's fastest-moving markets (resolve every day). 33+ daily BTC markets with live odds.
+- **Connection status**: Sidebar now shows "REST Polling (3s)" when WS is unavailable, "WebSocket Live" when connected.
+
+### Fixes
+- **Market click now loads data**: Previously depended on WS relay (not available on Vercel). Now uses REST polling that works everywhere.
+- **BTC market timezone fix**: Previous slug-based approach failed due to UTC vs local time. Now uses Gamma search API which is timezone-independent.
+- **Chart price derivation**: CLOB `/prices` and `/midpoint` APIs return errors for many tokens. Chart now derives price from orderbook best bid/ask midpoint.
+- **Chart loading state**: Shows current market price while waiting for polling data to accumulate.
+
+### Important Notes
+- **Polymarket does NOT have 5-minute or 15-minute BTC markets.** The fastest BTC prediction markets on Polymarket are daily ("Bitcoin above $X on July 7?"). These resolve once per day.
+- The WebSocket relay (`mini-services/polymarket-ws/`) is still available for local dev but is NOT required for the app to function.
+- For real-time WS data on Vercel, the relay would need to be deployed to Railway or similar (free tier available).
+
+### Files Changed
+- `src/lib/polymarket.ts` — Added `getBtcDailyMarkets()`, `getTokenPrices()`, improved `getCryptoMarkets()`
+- `src/stores/trading.ts` — Added polling system (`startPolling`/`stopPolling`), BTC markets state, graceful WS failure handling
+- `src/app/page.tsx` — Uses polling, shows "POLLING" badge, initial orderbook fetch on market select
+- `src/components/trading/MarketSidebar.tsx` — Added BTC tab (default), time remaining, improved loading states
+- `src/components/trading/PriceChart.tsx` — Shows current price while loading
+- `src/app/api/polymarket/markets/route.ts` — Returns `btc` array alongside `popular` and `crypto`
+
 ## [2.0.0] — 2026-07-06 — Complete Serverless Rebuild
 
 ### Breaking Changes
