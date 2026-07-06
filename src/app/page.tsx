@@ -23,11 +23,14 @@ export default function Home() {
     connectWs,
     setPopularMarkets,
     setCryptoMarkets,
+    setBtcMarkets,
     setIsLoadingMarkets,
     setBalance,
     setSelectedTokenId,
     subscribeAsset,
     updateOrderbook,
+    startPolling,
+    stopPolling,
   } = useTradingStore();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -41,12 +44,13 @@ export default function Home() {
       const data = await res.json();
       if (data.popular) setPopularMarkets(data.popular);
       if (data.crypto) setCryptoMarkets(data.crypto);
+      if (data.btc) setBtcMarkets(data.btc);
     } catch (e) {
       console.error('Failed to fetch markets:', e);
     } finally {
       setIsLoadingMarkets(false);
     }
-  }, [setPopularMarkets, setCryptoMarkets, setIsLoadingMarkets]);
+  }, [setPopularMarkets, setCryptoMarkets, setBtcMarkets, setIsLoadingMarkets]);
 
   // Fetch balance
   const fetchBalance = useCallback(async () => {
@@ -66,22 +70,28 @@ export default function Home() {
   useEffect(() => {
     fetchMarkets();
     fetchBalance();
+    // Try WS connection (will gracefully fail on Vercel, triggering polling)
     connectWs();
   }, [fetchMarkets, fetchBalance, connectWs]);
 
-  // When market is selected, set token ID, subscribe WS, fetch orderbook
+  // When market is selected, set token ID, subscribe WS, start polling
   useEffect(() => {
-    if (!selectedMarket?.clobTokenIds?.length) return;
+    if (!selectedMarket?.clobTokenIds?.length) {
+      stopPolling();
+      return;
+    }
 
     const firstTokenId = selectedMarket.clobTokenIds[0];
     setSelectedTokenId(firstTokenId);
 
-    // Subscribe to all tokens via WebSocket
-    selectedMarket.clobTokenIds.forEach((tid) => subscribeAsset(tid));
+    const tokenIds = selectedMarket.clobTokenIds;
 
-    // Fetch orderbook for the selected token
-    async function fetchOrderbooks() {
-      for (const tokenId of selectedMarket.clobTokenIds) {
+    // Try WS subscription (no-op if not connected)
+    tokenIds.forEach((tid) => subscribeAsset(tid));
+
+    // Initial REST orderbook fetch (always, even with WS)
+    async function fetchInitialOrderbooks() {
+      for (const tokenId of tokenIds) {
         try {
           const res = await fetch(
             `/api/polymarket/orderbook?token_id=${encodeURIComponent(tokenId)}`,
@@ -105,7 +115,18 @@ export default function Home() {
         }
       }
     }
-    fetchOrderbooks();
+    fetchInitialOrderbooks();
+
+    // Start REST polling (will be a no-op if WS is connected)
+    // Small delay to let initial fetch complete
+    const pollTimer = setTimeout(() => {
+      startPolling(tokenIds);
+    }, 1000);
+
+    return () => {
+      clearTimeout(pollTimer);
+      stopPolling();
+    };
   }, [selectedMarket?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -146,11 +167,11 @@ export default function Home() {
                 className={`text-[10px] px-1.5 py-0 ${
                   wsConnected
                     ? 'border-emerald-500/40 text-emerald-400'
-                    : 'border-red-500/40 text-red-400'
+                    : 'border-amber-500/40 text-amber-400'
                 }`}
               >
                 <Activity className="h-2.5 w-2.5 mr-1" />
-                {wsConnected ? 'LIVE' : 'OFFLINE'}
+                {wsConnected ? 'LIVE' : 'POLLING'}
               </Badge>
             </div>
           </div>
@@ -205,9 +226,8 @@ export default function Home() {
                 Select a Market
               </h2>
               <p className="text-sm text-zinc-500 leading-relaxed">
-                Browse popular or crypto markets in the sidebar, or search for
-                a specific market to start trading. BTC 5-minute and 15-minute
-                prediction markets update in real-time.
+                Browse BTC daily markets, crypto, or popular markets in the sidebar.
+                Click any market to see live orderbook, prices, and charts.
               </p>
               <div className="flex items-center justify-center gap-2 pt-2">
                 {!sidebarOpen && (

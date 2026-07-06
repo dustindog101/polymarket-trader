@@ -153,6 +153,11 @@ export function PriceChart() {
   }
 
   if (history.length === 0) {
+    // Show current price from market data while waiting for polling data
+    const currentPrice = selectedMarket?.tokens?.find(
+      (t) => t.token_id === selectedTokenId,
+    )?.price ?? parseFloat(selectedMarket?.outcomePrices?.[0] ?? '0');
+
     return (
       <div className="flex h-full flex-col border border-zinc-800 rounded-lg bg-zinc-900/40">
         <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
@@ -163,8 +168,13 @@ export function PriceChart() {
         </div>
         <div className="flex flex-1 items-center justify-center text-sm text-zinc-600">
           <div className="flex flex-col items-center gap-2">
-            <div className="size-6 rounded-full border-2 border-zinc-700 border-t-zinc-500 animate-spin" />
-            <span>Waiting for price data...</span>
+            <div className="size-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" />
+            <span>Loading price data...</span>
+            {currentPrice > 0 && (
+              <span className="text-lg font-mono text-emerald-400 font-bold">
+                ¢{(currentPrice * 100).toFixed(1)}
+              </span>
+            )}
           </div>
         </div>
       </div>

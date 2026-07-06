@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, TrendingUp, Wifi, WifiOff, Clock, X } from 'lucide-react';
+import { Search, TrendingUp, Wifi, WifiOff, Clock, X, Bitcoin, Coins } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -24,12 +24,25 @@ function isResolvingSoon(endDate: string): boolean {
   return end > now && end - now <= 5 * 60 * 1000;
 }
 
+function getTimeRemaining(endDate: string): string {
+  const end = new Date(endDate).getTime();
+  const now = Date.now();
+  const diff = end - now;
+  if (diff <= 0) return 'Ended';
+  const hours = Math.floor(diff / (1000 * 60 * 60));
+  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  if (hours > 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 // ─── Component ───────────────────────────────────────────────────────
 
 export function MarketSidebar() {
   const {
     popularMarkets,
     cryptoMarkets,
+    btcMarkets,
     searchResults,
     selectedMarket,
     searchQuery,
@@ -41,8 +54,6 @@ export function MarketSidebar() {
     setMarketCategory,
     setSearchResults,
     setIsLoadingMarkets,
-    setPopularMarkets,
-    setCryptoMarkets,
   } = useTradingStore();
 
   const [localQuery, setLocalQuery] = useState(searchQuery);
@@ -52,8 +63,6 @@ export function MarketSidebar() {
   useEffect(() => {
     setLocalQuery(searchQuery);
   }, [searchQuery]);
-
-  // Markets are loaded by the main page into the store — no duplicate fetch here.
 
   // Debounced search
   const handleSearchChange = useCallback(
@@ -93,7 +102,7 @@ export function MarketSidebar() {
     setLocalQuery('');
     setSearchQuery('');
     setSearchResults([]);
-    setMarketCategory('popular');
+    setMarketCategory('btc');
   }, [setSearchQuery, setSearchResults, setMarketCategory]);
 
   // Select market — orderbook fetching and WS subscription handled by main page
@@ -107,9 +116,11 @@ export function MarketSidebar() {
   const isSearching = searchQuery.trim().length > 0;
   const displayMarkets = isSearching
     ? searchResults
-    : marketCategory === 'crypto'
-      ? cryptoMarkets
-      : popularMarkets;
+    : marketCategory === 'btc'
+      ? btcMarkets
+      : marketCategory === 'crypto'
+        ? cryptoMarkets
+        : popularMarkets;
 
   // ─── Market Card ─────────────────────────────────────────────────
   function MarketCard({ market }: { market: Market }) {
@@ -159,10 +170,31 @@ export function MarketSidebar() {
           </Badge>
         </div>
 
-        <div className="mt-1.5 text-xs text-zinc-500">
-          Vol 24h: <span className="text-zinc-400">{formatCompactVolume(vol)}</span>
+        <div className="mt-1.5 flex items-center justify-between text-xs text-zinc-500">
+          <span>
+            Vol 24h: <span className="text-zinc-400">{formatCompactVolume(vol)}</span>
+          </span>
+          {market.endDate && (
+            <span className="text-zinc-600">
+              {getTimeRemaining(market.endDate)}
+            </span>
+          )}
         </div>
       </button>
+    );
+  }
+
+  // ─── Skeleton Loader ────────────────────────────────────────────
+  function MarketSkeleton() {
+    return (
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
+        <Skeleton className="mb-2 h-4 w-3/4 bg-zinc-800" />
+        <div className="flex gap-2">
+          <Skeleton className="h-5 w-16 bg-zinc-800" />
+          <Skeleton className="h-5 w-16 bg-zinc-800" />
+        </div>
+        <Skeleton className="mt-2 h-3 w-20 bg-zinc-800" />
+      </div>
     );
   }
 
@@ -200,21 +232,29 @@ export function MarketSidebar() {
         ) : (
           <Tabs
             value={marketCategory}
-            onValueChange={(v) => setMarketCategory(v as 'popular' | 'crypto')}
+            onValueChange={(v) => setMarketCategory(v as 'popular' | 'crypto' | 'btc' | 'search')}
           >
             <TabsList className="h-8 w-full bg-zinc-900 border border-zinc-800 rounded-lg">
               <TabsTrigger
-                value="popular"
-                className="flex-1 text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100 rounded-md"
+                value="btc"
+                className="flex-1 text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-orange-400 rounded-md gap-1"
               >
-                <TrendingUp className="size-3 mr-1" />
-                Popular
+                <Bitcoin className="size-3" />
+                BTC
               </TabsTrigger>
               <TabsTrigger
                 value="crypto"
-                className="flex-1 text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100 rounded-md"
+                className="flex-1 text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100 rounded-md gap-1"
               >
+                <Coins className="size-3" />
                 Crypto
+              </TabsTrigger>
+              <TabsTrigger
+                value="popular"
+                className="flex-1 text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-zinc-100 rounded-md gap-1"
+              >
+                <TrendingUp className="size-3" />
+                Hot
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -228,14 +268,7 @@ export function MarketSidebar() {
         <div className="flex flex-col gap-1.5 pb-4">
           {isLoadingMarkets && displayMarkets.length === 0 ? (
             Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
-                <Skeleton className="mb-2 h-4 w-3/4 bg-zinc-800" />
-                <div className="flex gap-2">
-                  <Skeleton className="h-5 w-16 bg-zinc-800" />
-                  <Skeleton className="h-5 w-16 bg-zinc-800" />
-                </div>
-                <Skeleton className="mt-2 h-3 w-20 bg-zinc-800" />
-              </div>
+              <MarketSkeleton key={i} />
             ))
           ) : displayMarkets.length === 0 ? (
             <div className="py-12 text-center text-sm text-zinc-600">
@@ -249,19 +282,21 @@ export function MarketSidebar() {
         </div>
       </ScrollArea>
 
-      {/* Bottom: Wallet Status */}
+      {/* Bottom: Connection Status */}
       <Separator className="bg-zinc-800" />
       <div className="flex items-center gap-2 px-4 py-2.5">
         <div
-          className={`size-2 rounded-full ${wsConnected ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-zinc-600'}`}
+          className={`size-2 rounded-full ${
+            wsConnected ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.3)]'
+          }`}
         />
         <span className="text-xs text-zinc-400">
-          {wsConnected ? 'Wallet Connected' : 'Disconnected'}
+          {wsConnected ? 'WebSocket Live' : 'REST Polling (3s)'}
         </span>
         {wsConnected ? (
           <Wifi className="ml-auto size-3.5 text-emerald-500" />
         ) : (
-          <WifiOff className="ml-auto size-3.5 text-zinc-600" />
+          <WifiOff className="ml-auto size-3.5 text-amber-500/60" />
         )}
       </div>
     </aside>

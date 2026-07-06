@@ -69,11 +69,12 @@ interface TradingStore {
   // Markets
   popularMarkets: Market[];
   cryptoMarkets: Market[];
+  btcMarkets: Market[];
   searchResults: Market[];
   selectedMarket: Market | null;
   searchQuery: string;
   isLoadingMarkets: boolean;
-  marketCategory: 'popular' | 'crypto' | 'search';
+  marketCategory: 'popular' | 'crypto' | 'btc' | 'search';
 
   // Orderbook
   orderbooks: Record<string, OrderbookData>;
@@ -93,6 +94,7 @@ interface TradingStore {
   // Connection
   wsConnected: boolean;
   socket: Socket | null;
+  pollingInterval: ReturnType<typeof setInterval> | null;
 
   // UI
   showOrderTicket: boolean;
@@ -102,11 +104,12 @@ interface TradingStore {
   // Actions
   setPopularMarkets: (markets: Market[]) => void;
   setCryptoMarkets: (markets: Market[]) => void;
+  setBtcMarkets: (markets: Market[]) => void;
   setSearchResults: (markets: Market[]) => void;
   selectMarket: (market: Market) => void;
   setSearchQuery: (q: string) => void;
   setIsLoadingMarkets: (loading: boolean) => void;
-  setMarketCategory: (cat: 'popular' | 'crypto' | 'search') => void;
+  setMarketCategory: (cat: 'popular' | 'crypto' | 'btc' | 'search') => void;
   updateOrderbook: (assetId: string, data: OrderbookData) => void;
   addPricePoint: (assetId: string, point: PricePoint) => void;
   setPriceHistory: (assetId: string, points: PricePoint[]) => void;
@@ -121,16 +124,19 @@ interface TradingStore {
   setShowOrderTicket: (show: boolean) => void;
   setOrderSide: (side: 'BUY' | 'SELL') => void;
   setOrderType: (type: 'GTC' | 'GTD' | 'FOK' | 'FAK') => void;
+  startPolling: (tokenIds: string[]) => void;
+  stopPolling: () => void;
 }
 
 export const useTradingStore = create<TradingStore>((set, get) => ({
   popularMarkets: [],
   cryptoMarkets: [],
+  btcMarkets: [],
   searchResults: [],
   selectedMarket: null,
   searchQuery: '',
   isLoadingMarkets: false,
-  marketCategory: 'popular',
+  marketCategory: 'btc', // Default to BTC tab
   orderbooks: {},
   selectedTokenId: null,
   priceHistory: {},
@@ -140,14 +146,23 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   allowance: '0',
   wsConnected: false,
   socket: null,
+  pollingInterval: null,
   showOrderTicket: false,
   orderSide: 'BUY',
   orderType: 'GTC',
 
   setPopularMarkets: (markets) => set({ popularMarkets: markets }),
   setCryptoMarkets: (markets) => set({ cryptoMarkets: markets }),
+  setBtcMarkets: (markets) => set({ btcMarkets: markets }),
   setSearchResults: (markets) => set({ searchResults: markets }),
-  selectMarket: (market) => set({ selectedMarket: market, showOrderTicket: false }),
+  selectMarket: (market) => {
+    const prev = get().selectedMarket;
+    // Stop old polling if market changed
+    if (prev?.id !== market.id) {
+      get().stopPolling();
+    }
+    set({ selectedMarket: market, showOrderTicket: false, priceHistory: {} });
+  },
   setSearchQuery: (q) => set({ searchQuery: q }),
   setIsLoadingMarkets: (loading) => set({ isLoadingMarkets: loading }),
   setMarketCategory: (cat) => set({ marketCategory: cat }),
@@ -174,64 +189,81 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
     const existing = get().socket;
     if (existing?.connected) return;
 
-    const socket = io('/?XTransformPort=3003', {
-      transports: ['websocket', 'polling'],
-      forceNew: true,
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 2000,
-      timeout: 15000,
-    });
+    try {
+      const socket = io('/?XTransformPort=3003', {
+        transports: ['websocket', 'polling'],
+        forceNew: true,
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 3000,
+        timeout: 8000,
+      });
 
-    socket.on('connect', () => {
-      console.log('[Store] WS connected');
-      set({ wsConnected: true, socket });
+      socket.on('connect', () => {
+        console.log('[Store] WS connected');
+        set({ wsConnected: true, socket });
+        // Stop polling if WS connects — WS is faster
+        get().stopPolling();
 
-      // Re-subscribe to any selected market's tokens
-      const market = get().selectedMarket;
-      if (market?.clobTokenIds?.length) {
-        socket.emit('subscribe', market.clobTokenIds);
-      }
-    });
+        // Re-subscribe to any selected market's tokens
+        const market = get().selectedMarket;
+        if (market?.clobTokenIds?.length) {
+          socket.emit('subscribe', market.clobTokenIds);
+        }
+      });
 
-    socket.on('disconnect', () => {
-      console.log('[Store] WS disconnected');
+      socket.on('disconnect', () => {
+        console.log('[Store] WS disconnected');
+        set({ wsConnected: false });
+        // Start polling as fallback when WS drops
+        const market = get().selectedMarket;
+        if (market?.clobTokenIds?.length) {
+          get().startPolling(market.clobTokenIds);
+        }
+      });
+
+      socket.on('connect_error', () => {
+        console.log('[Store] WS connection failed, using REST polling');
+        set({ wsConnected: false });
+      });
+
+      socket.on('book', (data: any) => {
+        get().updateOrderbook(data.asset_id, {
+          bids: data.bids || [],
+          asks: data.asks || [],
+          timestamp: data.timestamp || Date.now(),
+        });
+      });
+
+      socket.on('price', (data: any) => {
+        get().addPricePoint(data.asset_id, {
+          price: data.price,
+          timestamp: data.timestamp,
+          side: data.side || 'trade',
+          size: data.size,
+        });
+      });
+
+      socket.on('trade', (data: any) => {
+        get().addPricePoint(data.asset_id, {
+          price: data.price,
+          timestamp: data.timestamp,
+          side: data.side || 'trade',
+          size: data.size,
+        });
+      });
+
+      socket.on('history', (data: any) => {
+        if (data.points?.length) {
+          get().setPriceHistory(data.asset_id, data.points);
+        }
+      });
+
+      set({ socket });
+    } catch (e) {
+      console.log('[Store] WS init failed, will use REST polling');
       set({ wsConnected: false });
-    });
-
-    socket.on('book', (data: any) => {
-      get().updateOrderbook(data.asset_id, {
-        bids: data.bids || [],
-        asks: data.asks || [],
-        timestamp: data.timestamp || Date.now(),
-      });
-    });
-
-    socket.on('price', (data: any) => {
-      get().addPricePoint(data.asset_id, {
-        price: data.price,
-        timestamp: data.timestamp,
-        side: data.side || 'trade',
-        size: data.size,
-      });
-    });
-
-    socket.on('trade', (data: any) => {
-      get().addPricePoint(data.asset_id, {
-        price: data.price,
-        timestamp: data.timestamp,
-        side: data.side || 'trade',
-        size: data.size,
-      });
-    });
-
-    socket.on('history', (data: any) => {
-      if (data.points?.length) {
-        get().setPriceHistory(data.asset_id, data.points);
-      }
-    });
-
-    set({ socket });
+    }
   },
 
   subscribeAsset: (assetId) => {
@@ -253,4 +285,99 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   setShowOrderTicket: (show) => set({ showOrderTicket: show }),
   setOrderSide: (side) => set({ orderSide: side }),
   setOrderType: (type) => set({ orderType: type }),
+
+  // REST polling fallback — works without WS relay (Vercel serverless)
+  startPolling: (tokenIds: string[]) => {
+    // Don't poll if WS is connected
+    if (get().wsConnected) return;
+    if (tokenIds.length === 0) return;
+
+    // Clear existing polling
+    const existing = get().pollingInterval;
+    if (existing) clearInterval(existing);
+
+    // Initial fetch
+    fetchPollingData(tokenIds);
+
+    // Poll every 3 seconds
+    const interval = setInterval(() => {
+      // Re-check token IDs from current market selection
+      const market = get().selectedMarket;
+      if (!market?.clobTokenIds?.length) {
+        get().stopPolling();
+        return;
+      }
+      fetchPollingData(market.clobTokenIds);
+    }, 3000);
+
+    set({ pollingInterval: interval });
+  },
+
+  stopPolling: () => {
+    const existing = get().pollingInterval;
+    if (existing) {
+      clearInterval(existing);
+      set({ pollingInterval: null });
+    }
+  },
 }));
+
+// ─── Polling helper (outside store to avoid circular deps) ────────
+
+async function fetchPollingData(tokenIds: string[]) {
+  const store = useTradingStore.getState();
+
+  // Fetch orderbooks
+  for (const tokenId of tokenIds) {
+    try {
+      const res = await fetch(
+        `/api/polymarket/orderbook?token_id=${encodeURIComponent(tokenId)}`,
+      );
+      if (res.ok) {
+        const data = await res.json();
+        store.updateOrderbook(tokenId, {
+          bids: (data.bids || []).map((b: any) => ({
+            price: parseFloat(b.price),
+            size: parseFloat(b.size),
+          })),
+          asks: (data.asks || []).map((a: any) => ({
+            price: parseFloat(a.price),
+            size: parseFloat(a.size),
+          })),
+          timestamp: Date.now(),
+        });
+      }
+    } catch (err) {
+      // Silently ignore — will retry on next poll
+    }
+  }
+
+  // Derive chart price points from orderbook best bid/ask midpoint
+  // The CLOB prices/midpoint API doesn't work reliably, so we compute from the book
+  const now = Date.now();
+  for (const tokenId of tokenIds) {
+    const book = store.orderbooks[tokenId];
+    if (!book) continue;
+
+    const bestBid = book.bids.length > 0 ? Math.max(...book.bids.map(b => b.price)) : 0;
+    const bestAsk = book.asks.length > 0 ? Math.min(...book.asks.map(a => a.price)) : 0;
+
+    // Use best bid if no asks, best ask if no bids, midpoint if both
+    let price = 0;
+    if (bestBid > 0 && bestAsk > 0) {
+      price = (bestBid + bestAsk) / 2;
+    } else if (bestBid > 0) {
+      price = bestBid;
+    } else if (bestAsk > 0) {
+      price = bestAsk;
+    }
+
+    if (price > 0) {
+      store.addPricePoint(tokenId, {
+        price,
+        timestamp: now,
+        side: 'trade',
+      });
+    }
+  }
+}

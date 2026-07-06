@@ -161,6 +161,43 @@ export async function getPopularMarkets(limit = 30): Promise<GammaMarket[]> {
   return searchMarkets('', limit);
 }
 
+// Fetch live prices for multiple tokens (for polling)
+export async function getTokenPrices(tokenIds: string[]): Promise<Record<string, { price: string; midpoint: string; spread: string }>> {
+  if (tokenIds.length === 0) return {};
+  const ids = tokenIds.join(',');
+  const [pricesRes, midRes, spreadRes] = await Promise.allSettled([
+    fetch(`${CLOB_URL}/prices?token_ids=${ids}`),
+    fetch(`${CLOB_URL}/midpoint?token_ids=${ids}`),
+    fetch(`${CLOB_URL}/spread?token_ids=${ids}`),
+  ]);
+
+  const result: Record<string, { price: string; midpoint: string; spread: string }> = {};
+
+  if (pricesRes.status === 'fulfilled' && pricesRes.value.ok) {
+    const prices = await pricesRes.value.json();
+    for (const [k, v] of Object.entries(prices)) {
+      if (!result[k]) result[k] = { price: '0', midpoint: '0', spread: '0' };
+      result[k].price = String(v);
+    }
+  }
+  if (midRes.status === 'fulfilled' && midRes.value.ok) {
+    const mids = await midRes.value.json();
+    for (const [k, v] of Object.entries(mids)) {
+      if (!result[k]) result[k] = { price: '0', midpoint: '0', spread: '0' };
+      result[k].midpoint = String(v);
+    }
+  }
+  if (spreadRes.status === 'fulfilled' && spreadRes.value.ok) {
+    const spreads = await spreadRes.value.json();
+    for (const [k, v] of Object.entries(spreads)) {
+      if (!result[k]) result[k] = { price: '0', midpoint: '0', spread: '0' };
+      result[k].spread = String(v);
+    }
+  }
+
+  return result;
+}
+
 // Fetch markets from a specific event slug (e.g., "bitcoin-above-on-july-6-2026")
 export async function getMarketsByEventSlug(slug: string): Promise<GammaMarket[]> {
   const res = await fetch(`${GAMMA_URL}/events?slug=${slug}&closed=false`, {
@@ -190,7 +227,7 @@ export async function getCryptoMarkets(limit = 30): Promise<GammaMarket[]> {
         t.includes('bitcoin') || t.includes('btc') ||
         t.includes('ethereum') || t.includes('eth') ||
         t.includes('solana') || t.includes('sol') ||
-        s.includes('bitcoin') || s.includes('ethereum')
+        s.includes('bitcoin') || s.includes('ethereum') || s.includes('solana')
       );
     },
   );
@@ -212,6 +249,77 @@ export async function getCryptoMarkets(limit = 30): Promise<GammaMarket[]> {
   }
 
   return allMarkets.slice(0, limit);
+}
+
+// Fetch BTC daily "above $X" and other fast-moving BTC markets
+// Polymarket's fastest BTC markets resolve daily (e.g. "Bitcoin above $56,000 on July 7?")
+export async function getBtcDailyMarkets(): Promise<GammaMarket[]> {
+  const allMarkets: GammaMarket[] = [];
+  const seen = new Set<string>();
+
+  // Strategy: Use Gamma search API to find BTC events directly
+  // Search for "bitcoin above" which matches the daily "Bitcoin above ___ on [date]" events
+  const searches = [
+    'bitcoin above',       // Daily "above $X" markets (fastest)
+    'bitcoin price',       // Price range markets
+    'bitcoin hit',         // "Will Bitcoin reach $X" markets
+    'bitcoin reach',       // Same pattern
+    'bitcoin dip',         // Downside markets
+  ];
+
+  // Run all searches in parallel (each returns up to 20 markets)
+  const results = await Promise.allSettled(
+    searches.map((q) =>
+      fetch(
+        `${GAMMA_URL}/markets?closed=false&limit=20&order=volume24hr&ascending=false&query=${encodeURIComponent(q)}`,
+      ).then((r) => (r.ok ? r.json() : [])),
+    ),
+  );
+
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue;
+    const markets: any[] = Array.isArray(result.value) ? result.value : [];
+    for (const raw of markets) {
+      const m = normalizeMarket(raw);
+      if (!seen.has(m.id) && m.active && !m.closed) {
+        seen.add(m.id);
+        allMarkets.push(m);
+      }
+    }
+  }
+
+  // Also fetch from events endpoint for markets that only appear in events
+  const eventRes = await fetch(
+    `${GAMMA_URL}/events?closed=false&limit=100&order=volume24hr&ascending=false`,
+    { next: { revalidate: 30 } },
+  );
+  if (eventRes.ok) {
+    const events: any[] = await eventRes.json();
+    for (const event of events) {
+      const t = (event.title || '').toLowerCase();
+      const s = (event.slug || '').toLowerCase();
+      if (t.includes('bitcoin') || t.includes('btc') || s.includes('bitcoin')) {
+        for (const raw of event.markets || []) {
+          const m = normalizeMarket(raw);
+          if (!seen.has(m.id) && m.active && !m.closed) {
+            seen.add(m.id);
+            allMarkets.push(m);
+          }
+        }
+      }
+    }
+  }
+
+  // Sort by volume24hr descending, daily "above" markets first
+  allMarkets.sort((a, b) => {
+    const aDaily = a.question.toLowerCase().includes('above');
+    const bDaily = b.question.toLowerCase().includes('above');
+    if (aDaily && !bDaily) return -1;
+    if (!aDaily && bDaily) return 1;
+    return (b.volumeNum || 0) - (a.volumeNum || 0);
+  });
+
+  return allMarkets.slice(0, 40);
 }
 
 // ─── CLOB API (public read endpoints) ───────────────────────────────
