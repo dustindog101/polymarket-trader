@@ -13,12 +13,14 @@ import {
   Timer,
   Bitcoin,
   Coins,
+  History,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { useTradingStore } from '@/stores/trading';
+import { PreviousRoundsDialog } from '@/components/trading/PreviousRoundsDialog';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -98,6 +100,7 @@ export function MarketHeader() {
     useTradingStore();
 
   const [countdown, setCountdown] = useState({ text: '', expired: false });
+  const [showHistory, setShowHistory] = useState(false);
   const isFiveMinute = !!(selectedMarket?.asset && selectedMarket?.durationMinutes);
   const liveCountdown = useLiveCountdown(selectedMarket?.roundEnd);
 
@@ -205,15 +208,28 @@ export function MarketHeader() {
           )}
         </div>
 
-        <Button
-          onClick={() => setShowOrderTicket(true)}
-          className="shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
-          size="sm"
-        >
-          <ShoppingCart className="size-4 mr-1.5" />
-          Place Order
-          <ChevronRight className="size-3.5 ml-0.5" />
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          {isFiveMinute && (
+            <Button
+              onClick={() => setShowHistory(true)}
+              variant="outline"
+              size="sm"
+              className="h-8 border-zinc-700 bg-zinc-900 text-zinc-300 hover:text-zinc-100 hover:border-zinc-600"
+            >
+              <History className="size-3.5 mr-1.5" />
+              Previous Rounds
+            </Button>
+          )}
+          <Button
+            onClick={() => setShowOrderTicket(true)}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
+            size="sm"
+          >
+            <ShoppingCart className="size-4 mr-1.5" />
+            Place Order
+            <ChevronRight className="size-3.5 ml-0.5" />
+          </Button>
+        </div>
       </div>
 
       {/* Quick-trade row for 5M markets — 1-click BUY UP / BUY DOWN at best ask */}
@@ -436,6 +452,8 @@ export function MarketHeader() {
           </div>
         </div>
       )}
+
+      <PreviousRoundsDialog open={showHistory} onOpenChange={setShowHistory} />
     </header>
   );
 }
