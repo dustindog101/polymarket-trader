@@ -15,6 +15,7 @@ import { OrderTicket } from '@/components/trading/OrderTicket';
 import { OpenOrders } from '@/components/trading/OpenOrders';
 import { FillHistory } from '@/components/trading/FillHistory';
 import { ProxyPanel } from '@/components/trading/ProxyPanel';
+import { KeyboardShortcuts } from '@/components/trading/KeyboardShortcuts';
 
 export default function Home() {
   const {
@@ -218,12 +219,13 @@ export default function Home() {
                   size="sm"
                   className={`h-7 text-xs gap-1.5 ${showProxies ? 'text-blue-400' : ''}`}
                   onClick={() => setShowProxies(!showProxies)}
+                  title="Proxy Management"
                 >
                   <Shield className="h-3.5 w-3.5" />
                   Proxies
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Proxy Management</TooltipContent>
+              <TooltipContent side="bottom">Proxy Management (P)</TooltipContent>
             </Tooltip>
 
             <Tooltip>
@@ -233,12 +235,13 @@ export default function Home() {
                   size="sm"
                   className="h-7 text-xs gap-1.5"
                   onClick={fetchMarkets}
+                  title="Reload Markets"
                 >
                   <RefreshCw className="h-3 w-3" />
                   Refresh
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Reload Markets</TooltipContent>
+              <TooltipContent side="bottom">Reload Markets (R)</TooltipContent>
             </Tooltip>
           </div>
         </header>
@@ -314,6 +317,9 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* Global keyboard shortcuts — no UI, just side effects */}
+      <KeyboardShortcuts />
     </div>
   );
 }

@@ -441,7 +441,7 @@ export function MarketSidebar() {
         </div>
       </ScrollArea>
 
-      {/* Bottom: Connection Status */}
+      {/* Bottom: Connection Status + keyboard shortcut hint */}
       <Separator className="bg-zinc-800" />
       <div className="flex items-center gap-2 px-4 py-2.5">
         <div
@@ -457,6 +457,18 @@ export function MarketSidebar() {
         ) : (
           <WifiOff className="ml-auto size-3.5 text-amber-500/60" />
         )}
+      </div>
+      <div className="px-4 pb-2 flex flex-wrap gap-1 text-[9px] text-zinc-600">
+        <kbd className="px-1 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">1-4</kbd>
+        <span className="text-zinc-700">tabs</span>
+        <kbd className="px-1 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">B</kbd>
+        <span className="text-zinc-700">buy</span>
+        <kbd className="px-1 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">S</kbd>
+        <span className="text-zinc-700">sell</span>
+        <kbd className="px-1 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">/</kbd>
+        <span className="text-zinc-700">search</span>
+        <kbd className="px-1 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">P</kbd>
+        <span className="text-zinc-700">proxies</span>
       </div>
     </aside>
   );
