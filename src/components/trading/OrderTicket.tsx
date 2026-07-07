@@ -1,12 +1,13 @@
 'use client';
 
 import React, { useState, useCallback, useMemo } from 'react';
-import { X, Loader2, Info } from 'lucide-react';
+import { X, Loader2, Info, Clock, Zap, Calendar } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Badge } from '@/components/ui/badge';
 import {
   Select,
   SelectContent,
@@ -15,22 +16,69 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
-import { useTradingStore, type OpenOrder } from '@/stores/trading';
+import { useTradingStore } from '@/stores/trading';
 import { toast } from '@/hooks/use-toast';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
 type OrderSide = 'BUY' | 'SELL';
+type OrderMode = 'LIMIT' | 'MARKET';
 type OrderType = 'GTC' | 'GTD' | 'FOK' | 'FAK';
 
 interface OrderForm {
   side: OrderSide;
+  mode: OrderMode;
   type: OrderType;
   tokenId: string;
   price: string;
   size: string;
   postOnly: boolean;
+  expiration: string; // ISO datetime-local string for GTD
 }
+
+// ─── Order type metadata ─────────────────────────────────────────────
+
+const ORDER_TYPES: Array<{
+  value: OrderType;
+  label: string;
+  short: string;
+  description: string;
+  requiresPrice: boolean;
+  allowedModes: OrderMode[];
+}> = [
+  {
+    value: 'GTC',
+    label: 'Good Till Cancel',
+    short: 'GTC',
+    description: 'Stays open on the book until filled or manually cancelled. The standard limit order.',
+    requiresPrice: true,
+    allowedModes: ['LIMIT'],
+  },
+  {
+    value: 'GTD',
+    label: 'Good Till Date',
+    short: 'GTD',
+    description: 'Limit order that auto-cancels at a specified time. Useful for 5M markets where you want the order to expire before the round ends.',
+    requiresPrice: true,
+    allowedModes: ['LIMIT'],
+  },
+  {
+    value: 'FOK',
+    label: 'Fill or Kill',
+    short: 'FOK',
+    description: 'Must fill the entire size immediately at the specified price or better, or be cancelled entirely. No partial fills.',
+    requiresPrice: true,
+    allowedModes: ['LIMIT', 'MARKET'],
+  },
+  {
+    value: 'FAK',
+    label: 'Fill and Kill (IOC)',
+    short: 'FAK',
+    description: 'Fill as much as possible immediately, cancel the rest. Also known as Immediate-or-Cancel. Market orders use this.',
+    requiresPrice: true,
+    allowedModes: ['LIMIT', 'MARKET'],
+  },
+];
 
 // ─── Component ───────────────────────────────────────────────────────
 
@@ -50,16 +98,19 @@ export function OrderTicket() {
     proxies,
     selectedProxyId,
     setSelectedProxyId,
+    orderbooks,
   } = useTradingStore();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [form, setForm] = useState<OrderForm>({
     side: orderSide,
+    mode: 'LIMIT',
     type: orderType,
     tokenId: selectedTokenId ?? '',
     price: '',
     size: '',
     postOnly: false,
+    expiration: '',
   });
 
   // Apply prefill whenever the ticket opens with a prefill payload (from
@@ -73,6 +124,8 @@ export function OrderTicket() {
       size: orderPrefill.size !== undefined ? String(orderPrefill.size) : f.size,
       tokenId: orderPrefill.tokenId ?? f.tokenId,
       side: orderPrefill.side ?? f.side,
+      // Prefill from orderbook click = always a limit order at that price
+      mode: orderPrefill.price !== undefined ? 'LIMIT' : f.mode,
     }));
     if (orderPrefill.side) setOrderSide(orderPrefill.side);
     setOrderPrefill(null);
@@ -102,25 +155,64 @@ export function OrderTicket() {
     setForm((f) => ({ ...f, side: orderSide, type: orderType }));
   }, [orderSide, orderType]);
 
+  // When mode switches to MARKET, force type to FAK (the standard market order
+  // type). When switching back to LIMIT, restore GTC.
+  const handleModeChange = useCallback(
+    (mode: OrderMode) => {
+      setForm((f) => ({
+        ...f,
+        mode,
+        type: mode === 'MARKET' ? 'FAK' : 'GTC',
+        postOnly: mode === 'MARKET' ? false : f.postOnly,
+      }));
+      if (mode === 'MARKET') setOrderType('FAK');
+      else setOrderType('GTC');
+    },
+    [setOrderType],
+  );
+
+  // For MARKET orders, estimate the fill price from the orderbook.
+  // BUY = take asks (lowest ask price), SELL = take bids (highest bid price).
+  const estimatedMarketPrice = useMemo(() => {
+    if (form.mode !== 'MARKET' || !form.tokenId) return null;
+    const book = orderbooks[form.tokenId];
+    if (!book) return null;
+    if (form.side === 'BUY' && book.asks.length > 0) {
+      const bestAsk = Math.min(...book.asks.map((a) => a.price));
+      return bestAsk;
+    }
+    if (form.side === 'SELL' && book.bids.length > 0) {
+      const bestBid = Math.max(...book.bids.map((b) => b.price));
+      return bestBid;
+    }
+    return null;
+  }, [form.mode, form.tokenId, form.side, orderbooks]);
+
   const totalCost = useMemo(() => {
-    const price = parseFloat(form.price) / 100; // cents to decimal
     const size = parseFloat(form.size);
-    if (isNaN(price) || isNaN(size) || price <= 0 || size <= 0) return 0;
+    if (isNaN(size) || size <= 0) return 0;
+    if (form.mode === 'MARKET') {
+      if (!estimatedMarketPrice) return 0;
+      return estimatedMarketPrice * size;
+    }
+    const price = parseFloat(form.price) / 100; // cents to decimal
+    if (isNaN(price) || price <= 0) return 0;
     return price * size;
-  }, [form.price, form.size]);
+  }, [form.price, form.size, form.mode, estimatedMarketPrice]);
 
   const isFormValid = useMemo(() => {
-    const price = parseFloat(form.price);
     const size = parseFloat(form.size);
-    return (
-      form.tokenId !== '' &&
-      !isNaN(price) &&
-      price >= 0 &&
-      price <= 100 &&
-      !isNaN(size) &&
-      size > 0 &&
-      !isSubmitting
-    );
+    if (isNaN(size) || size <= 0 || isSubmitting) return false;
+    if (form.tokenId === '') return false;
+    if (form.mode === 'LIMIT') {
+      const price = parseFloat(form.price);
+      if (isNaN(price) || price < 0 || price > 100) return false;
+      // Post-only can't be FOK/FAK
+      if (form.postOnly && (form.type === 'FOK' || form.type === 'FAK')) return false;
+    }
+    // GTD requires an expiration
+    if (form.type === 'GTD' && !form.expiration) return false;
+    return true;
   }, [form, isSubmitting]);
 
   const handleSubmit = useCallback(async () => {
@@ -129,33 +221,56 @@ export function OrderTicket() {
     setIsSubmitting(true);
 
     try {
-      // If a proxy is selected, route the order through it. The API route
-      // accepts an optional `proxy` field and uses undici's ProxyAgent to
-      // actually route the request (the standard fetch `proxy` option is
-      // not supported on Vercel serverless).
       const selectedProxy = selectedProxyId
         ? proxies.find((p) => p.id === selectedProxyId)
         : null;
 
-      const payload = {
+      // Determine the price to send
+      let priceDecimal: number;
+      if (form.mode === 'MARKET') {
+        // Market order: use estimated price from orderbook, or 0.99/0.01 as fallback
+        // (CLOB V2 doesn't have a true "market" type — FAK at the best opposite price
+        // simulates it)
+        if (estimatedMarketPrice) {
+          priceDecimal = estimatedMarketPrice;
+        } else {
+          // Fallback: 0.99 for BUY, 0.01 for SELL (aggressive enough to cross)
+          priceDecimal = form.side === 'BUY' ? 0.99 : 0.01;
+        }
+      } else {
+        priceDecimal = parseFloat(form.price) / 100;
+      }
+
+      const payload: Record<string, any> = {
         token_id: form.tokenId,
         side: form.side,
         type: form.type,
-        price: parseFloat(form.price) / 100,
+        price: priceDecimal,
         size: parseFloat(form.size),
-        post_only: form.postOnly,
+        post_only: form.mode === 'LIMIT' ? form.postOnly : false,
         market: selectedMarket.conditionId,
-        ...(selectedProxy
-          ? {
-              proxy: {
-                host: selectedProxy.host,
-                port: selectedProxy.port,
-                username: selectedProxy.username,
-                password: selectedProxy.password,
-              },
-            }
-          : {}),
       };
+
+      // GTD: convert datetime-local to Unix seconds
+      if (form.type === 'GTD' && form.expiration) {
+        const expDate = new Date(form.expiration);
+        payload.expiration = Math.floor(expDate.getTime() / 1000);
+      }
+
+      // 5M markets use neg_risk and tick_size=0.001
+      if (selectedMarket.durationMinutes && selectedMarket.durationMinutes <= 15) {
+        payload.neg_risk = true;
+        payload.tick_size = 0.001;
+      }
+
+      if (selectedProxy) {
+        payload.proxy = {
+          host: selectedProxy.host,
+          port: selectedProxy.port,
+          username: selectedProxy.username,
+          password: selectedProxy.password,
+        };
+      }
 
       const res = await fetch('/api/polymarket/orders', {
         method: 'POST',
@@ -169,11 +284,16 @@ export function OrderTicket() {
         throw new Error(data.error ?? data.message ?? 'Order failed');
       }
 
+      const priceLabel =
+        form.mode === 'MARKET'
+          ? `~${(estimatedMarketPrice ? estimatedMarketPrice * 100 : 0).toFixed(1)}¢ (market)`
+          : `${parseFloat(form.price).toFixed(1)}¢`;
+
       toast({
-        title: `${form.side} order placed`,
-        description: selectedProxy
-          ? `${form.side} ${parseFloat(form.size)} shares @ ${parseFloat(form.price).toFixed(1)}¢ via ${selectedProxy.host}:${selectedProxy.port}`
-          : `${form.side} ${parseFloat(form.size)} shares @ ${parseFloat(form.price).toFixed(1)}¢`,
+        title: `${form.side} ${form.mode.toLowerCase()} order placed`,
+        description: `${form.side} ${parseFloat(form.size)} shares @ ${priceLabel} (${form.type})${
+          selectedProxy ? ` via ${selectedProxy.host}:${selectedProxy.port}` : ''
+        }`,
       });
 
       // Reset form
@@ -188,7 +308,15 @@ export function OrderTicket() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [isFormValid, form, selectedMarket, setShowOrderTicket, selectedProxyId, proxies]);
+  }, [
+    isFormValid,
+    form,
+    selectedMarket,
+    setShowOrderTicket,
+    selectedProxyId,
+    proxies,
+    estimatedMarketPrice,
+  ]);
 
   const handleSideChange = (side: OrderSide) => {
     setOrderSide(side);
@@ -203,6 +331,19 @@ export function OrderTicket() {
   if (!showOrderTicket || !selectedMarket) return null;
 
   const isBuy = form.side === 'BUY';
+  const availableTypes = ORDER_TYPES.filter((t) => t.allowedModes.includes(form.mode));
+  const selectedTypeMeta = ORDER_TYPES.find((t) => t.value === form.type);
+
+  // Default expiration for GTD: 1 hour from now, or the round end (for 5M), whichever is sooner
+  const defaultGtdExpiration = useMemo(() => {
+    const now = new Date();
+    const oneHour = new Date(now.getTime() + 60 * 60 * 1000);
+    if (selectedMarket?.roundEnd) {
+      const roundEnd = new Date(selectedMarket.roundEnd * 1000);
+      return roundEnd < oneHour ? roundEnd : oneHour;
+    }
+    return oneHour;
+  }, [selectedMarket?.roundEnd]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-end lg:items-stretch lg:justify-end">
@@ -213,10 +354,18 @@ export function OrderTicket() {
       />
 
       {/* Panel */}
-      <div className="relative z-10 w-full max-w-sm border-l border-zinc-800 bg-zinc-950 flex flex-col shadow-2xl lg:w-[320px]">
+      <div className="relative z-10 w-full max-w-sm border-l border-zinc-800 bg-zinc-950 flex flex-col shadow-2xl lg:w-[340px]">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
-          <span className="text-sm font-semibold text-zinc-100">Place Order</span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-zinc-100">Place Order</span>
+            {form.mode === 'MARKET' && (
+              <Badge variant="outline" className="text-[9px] border-amber-500/40 text-amber-400">
+                <Zap className="size-2.5 mr-0.5" />
+                MARKET
+              </Badge>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => setShowOrderTicket(false)}
@@ -227,7 +376,39 @@ export function OrderTicket() {
         </div>
 
         {/* Form */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
+        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3.5">
+          {/* Mode toggle: LIMIT vs MARKET */}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => handleModeChange('LIMIT')}
+              className={`
+                h-9 rounded-lg text-xs font-semibold transition-all duration-150 flex items-center justify-center gap-1.5
+                ${form.mode === 'LIMIT'
+                  ? 'bg-zinc-700 text-zinc-100 border border-zinc-600'
+                  : 'bg-zinc-900 text-zinc-500 border border-zinc-800 hover:text-zinc-300 hover:border-zinc-700'
+                }
+              `}
+            >
+              <Calendar className="size-3.5" />
+              LIMIT
+            </button>
+            <button
+              type="button"
+              onClick={() => handleModeChange('MARKET')}
+              className={`
+                h-9 rounded-lg text-xs font-semibold transition-all duration-150 flex items-center justify-center gap-1.5
+                ${form.mode === 'MARKET'
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                  : 'bg-zinc-900 text-zinc-500 border border-zinc-800 hover:text-zinc-300 hover:border-zinc-700'
+                }
+              `}
+            >
+              <Zap className="size-3.5" />
+              MARKET
+            </button>
+          </div>
+
           {/* Side toggle */}
           <div className="grid grid-cols-2 gap-2">
             <button
@@ -284,67 +465,153 @@ export function OrderTicket() {
             </div>
           )}
 
-          {/* Order type */}
-          <div className="space-y-1.5">
-            <Label className="text-xs text-zinc-400">Order Type</Label>
-            <Select
-              value={form.type}
-              onValueChange={(v) => handleTypeChange(v as OrderType)}
-            >
-              <SelectTrigger className="w-full border-zinc-800 bg-zinc-900/80 text-zinc-100 text-sm">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-zinc-900 border-zinc-700">
-                <SelectItem value="GTC" className="text-zinc-100 focus:bg-zinc-800 focus:text-zinc-100">
-                  Good Till Cancel
-                </SelectItem>
-                <SelectItem value="GTD" className="text-zinc-100 focus:bg-zinc-800 focus:text-zinc-100">
-                  Good Till Date
-                </SelectItem>
-                <SelectItem value="FOK" className="text-zinc-100 focus:bg-zinc-800 focus:text-zinc-100">
-                  Fill or Kill
-                </SelectItem>
-                <SelectItem value="FAK" className="text-zinc-100 focus:bg-zinc-800 focus:text-zinc-100">
-                  Fill and Kill
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Order type — only shown for LIMIT (MARKET is always FAK) */}
+          {form.mode === 'LIMIT' && (
+            <div className="space-y-1.5">
+              <Label className="text-xs text-zinc-400">Time in Force</Label>
+              <Select
+                value={form.type}
+                onValueChange={(v) => handleTypeChange(v as OrderType)}
+              >
+                <SelectTrigger className="w-full border-zinc-800 bg-zinc-900/80 text-zinc-100 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-zinc-900 border-zinc-700">
+                  {availableTypes.map((t) => (
+                    <SelectItem
+                      key={t.value}
+                      value={t.value}
+                      className="text-zinc-100 focus:bg-zinc-800 focus:text-zinc-100"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[10px] text-zinc-500">{t.short}</span>
+                        <span>{t.label}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedTypeMeta && (
+                <p className="text-[10px] text-zinc-600 leading-tight">{selectedTypeMeta.description}</p>
+              )}
+            </div>
+          )}
 
-          {/* Price */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <Label className="text-xs text-zinc-400">Price (cents)</Label>
-              <span className="text-[10px] text-zinc-600">0 – 100</span>
-            </div>
-            <Input
-              type="number"
-              step="0.1"
-              min="0"
-              max="100"
-              placeholder="0.0"
-              value={form.price}
-              onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
-              className="border-zinc-800 bg-zinc-900/80 text-zinc-100 font-mono text-sm"
-            />
-            {/* Quick price adjust — ±1¢ / ±5¢ from current */}
-            <div className="flex gap-1">
-              {[-5, -1, +1, +5].map((delta) => {
-                const current = parseFloat(form.price) || 0;
-                const next = Math.max(0, Math.min(100, current + delta));
-                return (
+          {/* GTD expiration picker */}
+          {form.type === 'GTD' && form.mode === 'LIMIT' && (
+            <div className="space-y-1.5">
+              <Label className="text-xs text-zinc-400 flex items-center gap-1.5">
+                <Clock className="size-3" />
+                Expires At
+              </Label>
+              <Input
+                type="datetime-local"
+                value={form.expiration || (() => {
+                  const d = defaultGtdExpiration;
+                  const off = d.getTimezoneOffset();
+                  return new Date(d.getTime() - off * 60000).toISOString().slice(0, 16);
+                })()}
+                onChange={(e) => setForm((f) => ({ ...f, expiration: e.target.value }))}
+                className="border-zinc-800 bg-zinc-900/80 text-zinc-100 text-sm"
+              />
+              <div className="flex gap-1">
+                {[
+                  { label: '5m', ms: 5 * 60 * 1000 },
+                  { label: '15m', ms: 15 * 60 * 1000 },
+                  { label: '1h', ms: 60 * 60 * 1000 },
+                  { label: 'Round end', ms: -1 },
+                ].map((preset) => (
                   <button
-                    key={delta}
+                    key={preset.label}
                     type="button"
-                    onClick={() => setForm((f) => ({ ...f, price: next.toFixed(1) }))}
-                    className="flex-1 h-7 rounded text-[11px] font-mono bg-zinc-900 text-zinc-500 border border-zinc-800 hover:text-zinc-300 hover:border-zinc-700 transition-colors"
+                    onClick={() => {
+                      let target: Date;
+                      if (preset.ms === -1 && selectedMarket?.roundEnd) {
+                        target = new Date(selectedMarket.roundEnd * 1000);
+                      } else {
+                        target = new Date(Date.now() + preset.ms);
+                      }
+                      const off = target.getTimezoneOffset();
+                      const local = new Date(target.getTime() - off * 60000)
+                        .toISOString()
+                        .slice(0, 16);
+                      setForm((f) => ({ ...f, expiration: local }));
+                    }}
+                    className="flex-1 h-6 rounded text-[10px] bg-zinc-900 text-zinc-500 border border-zinc-800 hover:text-zinc-300 hover:border-zinc-700 transition-colors"
                   >
-                    {delta > 0 ? `+${delta}` : delta}¢
+                    {preset.label}
                   </button>
-                );
-              })}
+                ))}
+              </div>
+              {selectedMarket?.roundEnd && (
+                <p className="text-[10px] text-amber-400/70">
+                  Round ends at {new Date(selectedMarket.roundEnd * 1000).toLocaleTimeString()}
+                </p>
+              )}
             </div>
-          </div>
+          )}
+
+          {/* Price — hidden for MARKET mode */}
+          {form.mode === 'LIMIT' ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-zinc-400">Price (cents)</Label>
+                <span className="text-[10px] text-zinc-600">0 – 100</span>
+              </div>
+              <Input
+                type="number"
+                step="0.1"
+                min="0"
+                max="100"
+                placeholder="0.0"
+                value={form.price}
+                onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
+                className="border-zinc-800 bg-zinc-900/80 text-zinc-100 font-mono text-sm"
+              />
+              {/* Quick price adjust — ±1¢ / ±5¢ from current */}
+              <div className="flex gap-1">
+                {[-5, -1, +1, +5].map((delta) => {
+                  const current = parseFloat(form.price) || 0;
+                  const next = Math.max(0, Math.min(100, current + delta));
+                  return (
+                    <button
+                      key={delta}
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, price: next.toFixed(1) }))}
+                      className="flex-1 h-7 rounded text-[11px] font-mono bg-zinc-900 text-zinc-500 border border-zinc-800 hover:text-zinc-300 hover:border-zinc-700 transition-colors"
+                    >
+                      {delta > 0 ? `+${delta}` : delta}¢
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            /* MARKET mode — show estimated fill price from orderbook */
+            <div className="space-y-1.5">
+              <Label className="text-xs text-zinc-400">Estimated Fill Price</Label>
+              <div className="h-9 rounded-md border border-zinc-800 bg-zinc-900/80 px-3 flex items-center justify-between">
+                {estimatedMarketPrice ? (
+                  <>
+                    <span className="text-sm font-mono text-amber-400 font-semibold">
+                      ¢{(estimatedMarketPrice * 100).toFixed(1)}
+                    </span>
+                    <span className="text-[10px] text-zinc-600">
+                      best {form.side === 'BUY' ? 'ask' : 'bid'}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs text-zinc-600">
+                    Loading orderbook… (will fill at best available price)
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-zinc-600 leading-tight">
+                Market orders execute immediately at the best available price. Uses FAK
+                (Fill and Kill) — fills as much as possible, cancels the rest.
+              </p>
+            </div>
+          )}
 
           {/* Size */}
           <div className="space-y-1.5">
@@ -377,41 +644,52 @@ export function OrderTicket() {
             </div>
           </div>
 
-          {/* Post-only */}
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="post-only"
-              checked={form.postOnly}
-              onCheckedChange={(checked) =>
-                setForm((f) => ({ ...f, postOnly: checked === true }))
-              }
-              className="border-zinc-700 data-[state=checked]:bg-zinc-600 data-[state=checked]:border-zinc-600"
-            />
-            <label
-              htmlFor="post-only"
-              className="flex items-center gap-1 text-xs text-zinc-400 cursor-pointer"
-            >
-              Post-only
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Info className="size-3 text-zinc-600" />
-                </TooltipTrigger>
-                <TooltipContent
-                  side="top"
-                  className="bg-zinc-900 border-zinc-700 text-zinc-300 text-xs max-w-[200px]"
-                >
-                  Order will only be placed as a maker order. If it would cross the
-                  spread, it will be rejected.
-                </TooltipContent>
-              </Tooltip>
-            </label>
-          </div>
+          {/* Post-only — only for LIMIT + GTC/GTD (can't post-only a FOK/FAK) */}
+          {form.mode === 'LIMIT' && (form.type === 'GTC' || form.type === 'GTD') && (
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="post-only"
+                checked={form.postOnly}
+                onCheckedChange={(checked) =>
+                  setForm((f) => ({ ...f, postOnly: checked === true }))
+                }
+                className="border-zinc-700 data-[state=checked]:bg-zinc-600 data-[state=checked]:border-zinc-600"
+              />
+              <label
+                htmlFor="post-only"
+                className="flex items-center gap-1 text-xs text-zinc-400 cursor-pointer"
+              >
+                Post-only (maker only)
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Info className="size-3 text-zinc-600" />
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="top"
+                    className="bg-zinc-900 border-zinc-700 text-zinc-300 text-xs max-w-[220px]"
+                  >
+                    Order will only rest on the book as a maker. If it would cross
+                    the spread (take liquidity), it will be rejected. Earns maker fees.
+                  </TooltipContent>
+                </Tooltip>
+              </label>
+            </div>
+          )}
+
+          {/* Post-only warning for FOK/FAK */}
+          {form.mode === 'LIMIT' && form.postOnly && (form.type === 'FOK' || form.type === 'FAK') && (
+            <p className="text-[10px] text-amber-400">
+              Post-only is disabled for {form.type} orders (they execute immediately, can't rest on the book).
+            </p>
+          )}
 
           <Separator className="bg-zinc-800" />
 
           {/* Total */}
           <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400">Total Cost</span>
+            <span className="text-xs text-zinc-400">
+              {form.mode === 'MARKET' ? 'Est. Total' : 'Total Cost'}
+            </span>
             <span className="text-sm font-mono font-semibold text-zinc-100">
               ${totalCost.toFixed(2)}
             </span>
@@ -477,7 +755,11 @@ export function OrderTicket() {
                 Placing Order...
               </>
             ) : (
-              `${form.side} ${form.size || '0'} @ ${form.price || '0.0'}¢`
+              <>
+                {form.side} {form.mode} {form.size || '0'}
+                {form.mode === 'LIMIT' ? ` @ ${form.price || '0.0'}¢` : ' (market)'}
+                <span className="ml-1.5 text-[10px] opacity-70">{form.type}</span>
+              </>
             )}
           </Button>
         </div>

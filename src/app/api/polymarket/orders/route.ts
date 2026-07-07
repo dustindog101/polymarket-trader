@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
           'POLY_NONCE': Math.floor(Math.random() * 1e9).toString(),
         };
 
-        const orderPayload = {
+        const orderPayload: Record<string, any> = {
           tokenID: body.token_id,
           price: body.price,
           size: body.size,
@@ -79,6 +79,13 @@ export async function POST(req: NextRequest) {
           feeRateBps: 0,
           nonce: Date.now(),
         };
+        // Forward optional CLOB V2 fields when provided
+        if (body.type === 'GTD' && body.expiration) {
+          orderPayload.expiration = body.expiration;
+        }
+        if (body.min_size !== undefined) orderPayload.minSize = body.min_size;
+        if (body.tick_size !== undefined) orderPayload.tickSize = body.tick_size;
+        if (body.neg_risk !== undefined) orderPayload.negRisk = body.neg_risk;
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 10000);

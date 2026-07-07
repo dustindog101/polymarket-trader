@@ -576,12 +576,21 @@ export interface PlaceOrderRequest {
   side: 'BUY' | 'SELL';
   type?: 'GTC' | 'GTD' | 'FOK' | 'FAK';
   post_only?: boolean;
+  /** Required for GTD — Unix timestamp (seconds) when the order expires. */
+  expiration?: number;
+  /** Optional: minimum size that must be filled (used for FOK/FAK). */
+  min_size?: number;
+  /** Optional: tick size for the market (0.01 for most, 0.001 for 5M). */
+  tick_size?: number;
+  /** Optional: NEG_RISK flag for markets that use the negative-risk
+   *  framework (most 5M/15M "Up or Down" markets). */
+  neg_risk?: boolean;
 }
 
 export async function placeOrder(req: PlaceOrderRequest): Promise<{ orderID: string; status: string }> {
   const headers = polyHeaders('POST', '/order');
 
-  const orderPayload = {
+  const orderPayload: Record<string, any> = {
     tokenID: req.token_id,
     price: req.price,
     size: req.size,
@@ -591,6 +600,20 @@ export async function placeOrder(req: PlaceOrderRequest): Promise<{ orderID: str
     feeRateBps: 0,
     nonce: Date.now(),
   };
+
+  // GTD requires an expiration timestamp
+  if (req.type === 'GTD' && req.expiration) {
+    orderPayload.expiration = req.expiration;
+  }
+  if (req.min_size !== undefined) {
+    orderPayload.minSize = req.min_size;
+  }
+  if (req.tick_size !== undefined) {
+    orderPayload.tickSize = req.tick_size;
+  }
+  if (req.neg_risk !== undefined) {
+    orderPayload.negRisk = req.neg_risk;
+  }
 
   const body = {
     order: orderPayload,
