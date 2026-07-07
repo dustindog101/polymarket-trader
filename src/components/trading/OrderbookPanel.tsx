@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useRef, useEffect, useState } from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { useTradingStore, type BookLevel, type OrderbookData } from '@/stores/trading';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -18,35 +18,66 @@ function formatSize(size: number): string {
 const MAX_LEVELS = 15;
 
 // ─── Row with flash animation ─────────────────────────────────────
+//
+// The flash logic compares the current size against the previous size
+// FOR THE SAME PRICE LEVEL. We use a ref keyed by price that's updated
+// synchronously during render (not in useEffect) so the comparison is
+// always against the immediately-previous value.
+//
+// Flash rules:
+//   - Size increased → green flash (bid) / red flash (ask)
+//   - Size decreased → subtle dim flash
+//   - New level (no previous) → no flash (just appears)
+//   - Removed level → handled by parent (not rendered)
+//
+// This avoids the constant flashing caused by the old approach which
+// re-flashed on every orderbook update regardless of whether the size
+// at this price actually changed.
 
 function BookRow({
   level,
   maxSize,
   side,
-  prevPriceRef,
-  flashKey,
+  prevSizesRef,
   onClick,
 }: {
   level: BookLevel;
   maxSize: number;
   side: 'bid' | 'ask';
-  prevPriceRef: React.MutableRefObject<Map<number, number>>;
-  flashKey: number;
+  prevSizesRef: React.MutableRefObject<Map<number, number>>;
   onClick: () => void;
 }) {
-  const [flash, setFlash] = useState(false);
-  const prevPrice = prevPriceRef.current.get(level.price);
+  const prevSize = prevSizesRef.current.get(level.price);
+  const sizeChanged = prevSize !== undefined && prevSize !== level.size;
+  const sizeIncreased = prevSize !== undefined && level.size > prevSize;
+
+  // Update the ref synchronously so the NEXT render compares against this one
+  prevSizesRef.current.set(level.price, level.size);
+
+  // Flash state — only triggers when size actually changed
+  const [flash, setFlash] = useState<'up' | 'down' | null>(null);
 
   useEffect(() => {
-    if (prevPrice !== undefined && prevPrice !== level.size) {
-      setFlash(true);
-      const t = setTimeout(() => setFlash(false), 300);
-      return () => clearTimeout(t);
-    }
-  }, [flashKey, level.size, prevPrice]);
+    if (!sizeChanged) return;
+    setFlash(sizeIncreased ? 'up' : 'down');
+    const t = setTimeout(() => setFlash(null), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [level.price, level.size]);
 
   const pct = maxSize > 0 ? (level.size / maxSize) * 100 : 0;
   const isBest = side === 'bid';
+
+  const flashBg =
+    flash === 'up'
+      ? side === 'bid'
+        ? 'bg-emerald-500/25'
+        : 'bg-red-500/25'
+      : flash === 'down'
+        ? side === 'bid'
+          ? 'bg-emerald-500/10'
+          : 'bg-red-500/10'
+        : '';
 
   return (
     <button
@@ -55,7 +86,7 @@ function BookRow({
       title={`Click to ${side === 'bid' ? 'sell at' : 'buy at'} ${cents(level.price)}¢`}
       className={`
         relative w-full flex items-center justify-between px-2 py-[3px] text-xs font-mono tabular-nums transition-colors cursor-pointer
-        ${flash ? (side === 'bid' ? 'bg-emerald-500/20' : 'bg-red-500/20') : 'hover:bg-zinc-800/60'}
+        ${flashBg ? flashBg : 'hover:bg-zinc-800/60'}
         ${isBest ? 'text-emerald-300' : 'text-zinc-400'}
       `}
     >
@@ -77,7 +108,7 @@ function BookRow({
 
 export function OrderbookPanel() {
   const { orderbooks, selectedTokenId, selectedMarket, quickOpenTicket, setSelectedTokenId } = useTradingStore();
-  const flashCounter = useRef(0);
+
   const bidPrevRef = useRef<Map<number, number>>(new Map());
   const askPrevRef = useRef<Map<number, number>>(new Map());
 
@@ -85,67 +116,90 @@ export function OrderbookPanel() {
     ? orderbooks[selectedTokenId]
     : undefined;
 
-  // Flash trigger on orderbook update
-  const [, forceUpdate] = useState(0);
-  const prevTimestampRef = useRef(0);
+  // Track whether we've EVER had data for this token, so we can show a
+  // "Loading..." state instead of "No bids" when the book is briefly empty
+  // during a round transition or API hiccup.
+  const everHadDataRef = useRef<Set<string>>(new Set());
+  const [showEmptyState, setShowEmptyState] = useState(false);
 
   useEffect(() => {
-    if (book?.timestamp && book.timestamp !== prevTimestampRef.current) {
-      prevTimestampRef.current = book.timestamp;
-      flashCounter.current += 1;
-      forceUpdate((n) => n + 1);
+    if (!selectedTokenId) return;
+    const hasData = !!(book && (book.bids.length > 0 || book.asks.length > 0));
+    if (hasData) {
+      everHadDataRef.current.add(selectedTokenId);
     }
-  }, [book?.timestamp]);
+    // Debounce the empty-state: only show "No bids/asks" if we've been empty
+    // for >500ms. This prevents flicker during rapid updates where the book
+    // is briefly empty between API responses.
+    if (hasData) {
+      setShowEmptyState(false);
+      return;
+    }
+    const hadBefore = everHadDataRef.current.has(selectedTokenId);
+    if (!hadBefore) {
+      // Never had data — show loading, not "empty"
+      setShowEmptyState(false);
+      return;
+    }
+    const t = setTimeout(() => setShowEmptyState(true), 500);
+    return () => clearTimeout(t);
+  }, [book?.bids.length, book?.asks.length, selectedTokenId, book]);
 
+  // Clear prev-size refs when token changes so we don't carry over stale data
+  useEffect(() => {
+    bidPrevRef.current = new Map();
+    askPrevRef.current = new Map();
+  }, [selectedTokenId]);
+
+  // Sorted + sliced bids/asks. Memoized on the book's bids/asks arrays only
+  // (NOT on flashCounter — that was causing unnecessary re-renders).
   const bids = useMemo(() => {
-    if (!book) return [];
+    if (!book?.bids) return [];
     const sorted = [...book.bids].sort((a, b) => b.price - a.price);
     return sorted.slice(0, MAX_LEVELS);
-  }, [book?.bids, flashCounter.current]);
+  }, [book?.bids]);
 
   const asks = useMemo(() => {
-    if (!book) return [];
+    if (!book?.asks) return [];
     const sorted = [...book.asks].sort((a, b) => a.price - b.price);
     return sorted.slice(0, MAX_LEVELS);
-  }, [book?.asks, flashCounter.current]);
+  }, [book?.asks]);
 
-  const maxBidSize = useMemo(
-    () => Math.max(...bids.map((b) => b.size), 1),
-    [bids],
-  );
-  const maxAskSize = useMemo(
-    () => Math.max(...asks.map((a) => a.size), 1),
-    [asks],
-  );
+  const maxBidSize = useMemo(() => Math.max(...bids.map((b) => b.size), 1), [bids]);
+  const maxAskSize = useMemo(() => Math.max(...asks.map((a) => a.size), 1), [asks]);
 
-  // Update prev refs for flash detection
+  // Clean up stale entries from prev-size refs — remove prices that are no
+  // longer in the book so the Map doesn't grow unbounded.
   useEffect(() => {
-    bidPrevRef.current = new Map(bids.map((b) => [b.price, b.size]));
-    askPrevRef.current = new Map(asks.map((a) => [a.price, a.size]));
+    const currentBidPrices = new Set(bids.map((b) => b.price));
+    for (const key of bidPrevRef.current.keys()) {
+      if (!currentBidPrices.has(key)) bidPrevRef.current.delete(key);
+    }
+    const currentAskPrices = new Set(asks.map((a) => a.price));
+    for (const key of askPrevRef.current.keys()) {
+      if (!currentAskPrices.has(key)) askPrevRef.current.delete(key);
+    }
   }, [bids, asks]);
 
   const bestBid = bids.length > 0 ? bids[0] : null;
   const bestAsk = asks.length > 0 ? asks[0] : null;
-  const spread =
-    bestBid && bestAsk ? bestAsk.price - bestBid.price : null;
-  const spreadPct =
-    spread !== null && bestAsk ? (spread / bestAsk.price) * 100 : null;
+  const spread = bestBid && bestAsk ? bestAsk.price - bestBid.price : null;
+  const spreadPct = spread !== null && bestAsk ? (spread / bestAsk.price) * 100 : null;
 
   const outcomeName =
-    selectedMarket?.tokens?.find((t) => t.token_id === selectedTokenId)?.outcome ??
-    'YES';
+    selectedMarket?.tokens?.find((t) => t.token_id === selectedTokenId)?.outcome ?? 'YES';
 
   if (!selectedTokenId || !book) {
     return (
       <div className="flex h-full flex-col border border-zinc-800 rounded-lg bg-zinc-900/40">
         <div className="flex h-full items-center justify-center text-sm text-zinc-600">
-          {selectedMarket
-            ? 'Select an outcome to view orderbook'
-            : 'Select a market to view orderbook'}
+          {selectedMarket ? 'Loading orderbook…' : 'Select a market to view orderbook'}
         </div>
       </div>
     );
   }
+
+  const isLoading = !showEmptyState && bids.length === 0 && asks.length === 0;
 
   return (
     <div className="flex h-full flex-col border border-zinc-800 rounded-lg bg-zinc-900/40 overflow-hidden">
@@ -189,7 +243,7 @@ export function OrderbookPanel() {
         <div className="overflow-y-auto border-r border-zinc-800/40 custom-scrollbar">
           {bids.length === 0 ? (
             <div className="flex items-center justify-center h-full text-xs text-zinc-700">
-              No bids
+              {isLoading ? 'Loading…' : showEmptyState ? 'No bids' : ''}
             </div>
           ) : (
             <div>
@@ -199,8 +253,7 @@ export function OrderbookPanel() {
                     level={level}
                     maxSize={maxBidSize}
                     side="bid"
-                    prevPriceRef={bidPrevRef}
-                    flashKey={flashCounter.current}
+                    prevSizesRef={bidPrevRef}
                     onClick={() =>
                       quickOpenTicket({
                         price: level.price * 100,
@@ -209,9 +262,7 @@ export function OrderbookPanel() {
                       })
                     }
                   />
-                  {i === 0 && (
-                    <div className="h-[1px] bg-emerald-500/20 mx-2" />
-                  )}
+                  {i === 0 && <div className="h-[1px] bg-emerald-500/20 mx-2" />}
                 </div>
               ))}
             </div>
@@ -222,7 +273,7 @@ export function OrderbookPanel() {
         <div className="overflow-y-auto custom-scrollbar">
           {asks.length === 0 ? (
             <div className="flex items-center justify-center h-full text-xs text-zinc-700">
-              No asks
+              {isLoading ? 'Loading…' : showEmptyState ? 'No asks' : ''}
             </div>
           ) : (
             <div>
@@ -232,8 +283,7 @@ export function OrderbookPanel() {
                     level={level}
                     maxSize={maxAskSize}
                     side="ask"
-                    prevPriceRef={askPrevRef}
-                    flashKey={flashCounter.current}
+                    prevSizesRef={askPrevRef}
                     onClick={() =>
                       quickOpenTicket({
                         price: level.price * 100,
@@ -242,9 +292,7 @@ export function OrderbookPanel() {
                       })
                     }
                   />
-                  {i === 0 && (
-                    <div className="h-[1px] bg-red-500/20 mx-2" />
-                  )}
+                  {i === 0 && <div className="h-[1px] bg-red-500/20 mx-2" />}
                 </div>
               ))}
             </div>
