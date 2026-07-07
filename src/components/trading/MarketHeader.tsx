@@ -93,6 +93,77 @@ const ASSET_META: Record<string, { label: string; icon: React.ReactNode; color: 
   sol: { label: 'SOL', icon: <Coins className="size-4" />, color: 'text-emerald-400' },
 };
 
+/**
+ * Compute the live midpoint price for a token from its orderbook.
+ * Returns null if the orderbook is empty.
+ *
+ * The orderbook updates every 500ms (for 5M markets) via the polling loop,
+ * so this gives us real-time prices — unlike `selectedMarket.outcomePrices`
+ * which only updates every 10s via the 5M market-list refresh.
+ */
+function useLivePrice(tokenId: string | null | undefined): number | null {
+  const orderbooks = useTradingStore((s) => s.orderbooks);
+  if (!tokenId) return null;
+  const book = orderbooks[tokenId];
+  if (!book || (book.bids.length === 0 && book.asks.length === 0)) return null;
+  const bestBid = book.bids.length > 0 ? Math.max(...book.bids.map((b) => b.price)) : 0;
+  const bestAsk = book.asks.length > 0 ? Math.min(...book.asks.map((a) => a.price)) : 0;
+  if (bestBid > 0 && bestAsk > 0) return (bestBid + bestAsk) / 2;
+  if (bestBid > 0) return bestBid;
+  if (bestAsk > 0) return bestAsk;
+  return null;
+}
+
+/** Fetch live BTC/ETH/SOL spot + target price. Shared with PriceChart.
+ *  Polls spot every 2s (was 3s — user wants every millisecond to count). */
+function useAssetPrice(asset: string | null | undefined, roundStart: number | null | undefined) {
+  const [data, setData] = useState<{ spot: number; historical: number | null } | null>(null);
+
+  useEffect(() => {
+    if (!asset) return;
+    let cancelled = false;
+    async function fetchTarget() {
+      if (!asset) return;
+      try {
+        const url = roundStart
+          ? `/api/polymarket/price?asset=${asset}&at=${roundStart}`
+          : `/api/polymarket/price?asset=${asset}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) setData({ spot: json.spot, historical: json.historical });
+      } catch {
+        // silent
+      }
+    }
+    fetchTarget();
+    return () => { cancelled = true; };
+  }, [asset, roundStart]);
+
+  useEffect(() => {
+    if (!asset) return;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/polymarket/price?asset=${asset}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        setData((prev) => ({ spot: json.spot, historical: prev?.historical ?? json.historical }));
+      } catch {
+        // silent
+      }
+    };
+    const interval = setInterval(poll, 2000);
+    return () => clearInterval(interval);
+  }, [asset]);
+
+  return data;
+}
+
+function formatUsd(price: number): string {
+  if (price >= 1000) return `$${price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${price.toFixed(2)}`;
+}
+
 // ─── Component ───────────────────────────────────────────────────────
 
 export function MarketHeader() {
@@ -103,6 +174,25 @@ export function MarketHeader() {
   const [showHistory, setShowHistory] = useState(false);
   const isFiveMinute = !!(selectedMarket?.asset && selectedMarket?.durationMinutes);
   const liveCountdown = useLiveCountdown(selectedMarket?.roundEnd);
+
+  // ─── LIVE PRICES from orderbook midpoints (updates every 500ms) ──
+  // This is the key fix: previously prices came from selectedMarket.outcomePrices
+  // which only updates every 10s. Now we compute from the orderbook which
+  // polls at 500ms for 5M markets — so UP/DOWN prices tick in real-time.
+  const liveUpPrice = useLivePrice(selectedMarket?.clobTokenIds?.[0]);
+  const liveDownPrice = useLivePrice(selectedMarket?.clobTokenIds?.[1]);
+  // Fallback to selectedMarket.outcomePrices if orderbook is empty (e.g. BTC daily markets)
+  const yesPrice = liveUpPrice ?? parseFloat(selectedMarket?.outcomePrices?.[0] ?? '0');
+  const noPrice = liveDownPrice ?? parseFloat(selectedMarket?.outcomePrices?.[1] ?? '0');
+
+  // ─── LIVE BTC/ETH/SOL spot + target price ──
+  const assetPrice = useAssetPrice(selectedMarket?.asset, selectedMarket?.roundStart);
+  const spotVsTarget =
+    assetPrice?.spot && assetPrice?.historical
+      ? assetPrice.spot >= assetPrice.historical
+        ? 'up'
+        : 'down'
+      : null;
 
   useEffect(() => {
     if (!selectedMarket?.endDate) return;
@@ -149,8 +239,6 @@ export function MarketHeader() {
     );
   }
 
-  const yesPrice = parseFloat(selectedMarket.outcomePrices?.[0] ?? '0');
-  const noPrice = parseFloat(selectedMarket.outcomePrices?.[1] ?? '0');
   const isResolved = selectedMarket.closed || !selectedMarket.active;
 
   // 5M-specific metadata
@@ -277,6 +365,55 @@ export function MarketHeader() {
           <span className="text-[10px] text-zinc-600 ml-1">
             Size 10 shares pre-set — adjust in ticket
           </span>
+        </div>
+      )}
+
+      {/* BTC/ETH/SOL spot vs target panel for 5M markets — the "price to beat" */}
+      {isFiveMinute && assetPrice && assetPrice.spot > 0 && (
+        <div className="mt-2.5 flex items-stretch gap-2">
+          {/* Live spot price */}
+          <div className="flex-1 rounded-md border border-zinc-700 bg-zinc-900/60 px-3 py-2">
+            <div className="text-[9px] uppercase tracking-wider text-zinc-500 font-medium mb-0.5">
+              {selectedMarket.asset?.toUpperCase()} Spot (live)
+            </div>
+            <div className={`text-xl font-bold font-mono tabular-nums leading-tight ${
+              spotVsTarget === 'up' ? 'text-emerald-400' : spotVsTarget === 'down' ? 'text-red-400' : 'text-zinc-200'
+            }`}>
+              {formatUsd(assetPrice.spot)}
+            </div>
+          </div>
+          {/* Target/strike price (price to beat) */}
+          <div className="flex-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+            <div className="text-[9px] uppercase tracking-wider text-amber-500/80 font-medium mb-0.5">
+              Target (price to beat)
+            </div>
+            <div className="text-xl font-bold font-mono tabular-nums leading-tight text-amber-400">
+              {assetPrice.historical ? formatUsd(assetPrice.historical) : '—'}
+            </div>
+          </div>
+          {/* Delta */}
+          {assetPrice.historical && (
+            <div className={`flex-1 rounded-md border px-3 py-2 ${
+              spotVsTarget === 'up'
+                ? 'border-emerald-500/30 bg-emerald-500/5'
+                : 'border-red-500/30 bg-red-500/5'
+            }`}>
+              <div className={`text-[9px] uppercase tracking-wider font-medium mb-0.5 ${
+                spotVsTarget === 'up' ? 'text-emerald-500/80' : 'text-red-500/80'
+              }`}>
+                {spotVsTarget === 'up' ? 'UP is winning' : 'DOWN is winning'}
+              </div>
+              <div className={`text-xl font-bold font-mono tabular-nums leading-tight ${
+                spotVsTarget === 'up' ? 'text-emerald-400' : 'text-red-400'
+              }`}>
+                {assetPrice.spot >= assetPrice.historical ? '+' : ''}
+                {formatUsd(assetPrice.spot - assetPrice.historical)}
+                <span className="text-xs ml-1 opacity-70">
+                  ({((assetPrice.spot - assetPrice.historical) / assetPrice.historical * 100).toFixed(2)}%)
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
