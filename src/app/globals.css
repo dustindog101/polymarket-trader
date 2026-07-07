@@ -89,35 +89,36 @@
   }
 }
 
-/* Custom scrollbar for trading panels */
+/* Custom scrollbar for trading panels — thinner, more refined */
 .custom-scrollbar::-webkit-scrollbar {
   width: 4px;
+  height: 4px;
 }
 .custom-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: oklch(0.3 0 0);
+  background: oklch(0.28 0 0);
   border-radius: 2px;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.4 0 0);
+  background: oklch(0.38 0 0);
 }
 
-/* Flash animation for price changes */
+/* Flash animation for price changes — snappier */
 @keyframes flash-green {
-  0% { background-color: oklch(0.45 0.2 155 / 0.3); }
+  0% { background-color: oklch(0.45 0.2 155 / 0.35); }
   100% { background-color: transparent; }
 }
 @keyframes flash-red {
-  0% { background-color: oklch(0.45 0.2 25 / 0.3); }
+  0% { background-color: oklch(0.45 0.2 25 / 0.35); }
   100% { background-color: transparent; }
 }
 .flash-green {
-  animation: flash-green 0.5s ease-out;
+  animation: flash-green 0.4s ease-out;
 }
 .flash-red {
-  animation: flash-red 0.5s ease-out;
+  animation: flash-red 0.4s ease-out;
 }
 
 /* Glow effects for best bid/ask */
@@ -126,4 +127,61 @@
 }
 .glow-ask {
   box-shadow: inset 0 0 12px oklch(0.5 0.2 25 / 0.15);
+}
+
+/* ─── Trading terminal polish ─────────────────────────────────────── */
+
+/* Live pulse for real-time indicators — subtle, not distracting */
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.pulse-live {
+  animation: pulse-live 2s ease-in-out infinite;
+}
+
+/* Urgent pulse for countdowns under 15s — fast and attention-grabbing */
+@keyframes pulse-urgent {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.02); }
+}
+.pulse-urgent {
+  animation: pulse-urgent 0.8s ease-in-out infinite;
+}
+
+/* Smooth price transitions — numbers don't jump, they ease */
+.price-tick {
+  transition: color 0.15s ease-out;
+}
+
+/* Tabular numbers everywhere — critical for a trading terminal.
+   All mono numbers align vertically so prices don't shift around. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Subtle grid texture on the chart background — Bloomberg-style */
+.chart-grid-bg {
+  background-image:
+    linear-gradient(oklch(1 0 0 / 0.015) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(1 0 0 / 0.015) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Glass panel effect for overlays — frosted, professional */
+.glass-panel {
+  background: oklch(0.11 0 0 / 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Hide number input spinners — cleaner look */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
 }

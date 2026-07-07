@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useCallback, useState } from 'react';
-import { Activity, Wallet, RefreshCw, ChevronLeft, ChevronRight, Zap, DollarSign, Shield, Settings as SettingsIcon } from 'lucide-react';
+import { Wallet, RefreshCw, ChevronLeft, ChevronRight, Zap, Shield, Settings as SettingsIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -160,13 +160,13 @@ export default function Home() {
 
       {/* ─── Main Content ────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Top Bar */}
-        <header className="h-12 flex items-center justify-between px-4 border-b border-border/50 bg-zinc-950/80 backdrop-blur-sm flex-shrink-0">
-          <div className="flex items-center gap-3">
+        {/* Top Bar — trading terminal style */}
+        <header className="h-11 flex items-center justify-between px-3 border-b border-zinc-800/80 bg-zinc-950/95 backdrop-blur-sm flex-shrink-0">
+          <div className="flex items-center gap-2.5">
             <Button
               variant="ghost"
               size="icon"
-              className="h-7 w-7"
+              className="h-7 w-7 text-zinc-500 hover:text-zinc-300"
               onClick={() => setSidebarOpen(!sidebarOpen)}
             >
               {sidebarOpen ? (
@@ -176,39 +176,38 @@ export default function Home() {
               )}
             </Button>
             <div className="flex items-center gap-2">
-              <Zap className="h-4 w-4 text-emerald-500" />
-              <span className="font-semibold text-sm tracking-tight">
-                Polymarket Trader
-              </span>
-              <Badge
-                variant="outline"
-                className={`text-[10px] px-1.5 py-0 ${
-                  wsConnected
-                    ? 'border-emerald-500/40 text-emerald-400'
-                    : 'border-amber-500/40 text-amber-400'
-                }`}
-              >
-                <Activity className="h-2.5 w-2.5 mr-1" />
-                {wsConnected ? 'LIVE' : 'POLLING'}
-              </Badge>
+              <div className="flex items-center gap-1.5">
+                <Zap className="h-3.5 w-3.5 text-emerald-500" fill="currentColor" />
+                <span className="font-bold text-sm tracking-tight text-zinc-100">
+                  POLY<span className="text-emerald-500">TERMINAL</span>
+                </span>
+              </div>
+              <div className="h-4 w-px bg-zinc-800" />
+              <div className="flex items-center gap-1.5">
+                <div className={`size-1.5 rounded-full ${wsConnected ? 'bg-emerald-500 pulse-live' : 'bg-amber-500'}`} />
+                <span className={`text-[10px] font-mono font-semibold uppercase tracking-wider ${wsConnected ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {wsConnected ? 'LIVE' : 'POLLING'}
+                </span>
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-7 text-xs gap-1.5"
+                  className="h-7 text-xs gap-1.5 text-zinc-400 hover:text-zinc-200"
                   onClick={fetchBalance}
                 >
                   <Wallet className="h-3.5 w-3.5" />
-                  <span className="font-mono">
+                  <span className="font-mono tabular-nums">
                     {balanceDisplay
-                      ? `${parseFloat(balanceDisplay).toFixed(2)} USDC`
-                      : 'Loading...'}
+                      ? `${parseFloat(balanceDisplay).toFixed(2)}`
+                      : '—'}
                   </span>
+                  <span className="text-zinc-600 text-[10px]">USDC</span>
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Wallet Balance (pUSD)</TooltipContent>
@@ -219,7 +218,7 @@ export default function Home() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className={`h-7 text-xs gap-1.5 ${showProxies ? 'text-blue-400' : ''}`}
+                  className={`h-7 text-xs gap-1.5 ${showProxies ? 'text-blue-400' : 'text-zinc-400 hover:text-zinc-200'}`}
                   onClick={() => setShowProxies(!showProxies)}
                   title="Proxy Management"
                 >
@@ -235,12 +234,11 @@ export default function Home() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-7 text-xs gap-1.5"
+                  className="h-7 w-7 p-0 text-zinc-400 hover:text-zinc-200"
                   onClick={fetchMarkets}
                   title="Reload Markets"
                 >
-                  <RefreshCw className="h-3 w-3" />
-                  Refresh
+                  <RefreshCw className="h-3.5 w-3.5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">Reload Markets (R)</TooltipContent>
@@ -251,7 +249,7 @@ export default function Home() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-7 w-7 p-0"
+                  className="h-7 w-7 p-0 text-zinc-400 hover:text-zinc-200"
                   onClick={() => setShowSettings(true)}
                   title="Settings"
                 >
@@ -267,29 +265,46 @@ export default function Home() {
         {selectedMarket ? (
           <MarketHeader />
         ) : (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center space-y-4 max-w-md">
-              <div className="mx-auto w-16 h-16 rounded-2xl bg-zinc-800/50 flex items-center justify-center">
-                <DollarSign className="h-8 w-8 text-zinc-500" />
+          <div className="flex-1 flex items-center justify-center chart-grid-bg">
+            <div className="text-center space-y-4 max-w-md px-6">
+              <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-zinc-800/50 border border-emerald-500/20 flex items-center justify-center">
+                <Zap className="h-8 w-8 text-emerald-500" fill="currentColor" />
               </div>
-              <h2 className="text-xl font-semibold text-zinc-300">
-                Select a Market
-              </h2>
-              <p className="text-sm text-zinc-500 leading-relaxed">
-                Browse BTC daily markets, crypto, or popular markets in the sidebar.
-                Click any market to see live orderbook, prices, and charts.
-              </p>
+              <div className="space-y-1.5">
+                <h2 className="text-xl font-bold text-zinc-200 tracking-tight">
+                  Polymarket Trading Terminal
+                </h2>
+                <p className="text-sm text-zinc-500 leading-relaxed">
+                  Real-time 5M/15M crypto markets with live orderbooks, BTC spot
+                  prices, and sub-second updates. Select a market to start.
+                </p>
+              </div>
               <div className="flex items-center justify-center gap-2 pt-2">
                 {!sidebarOpen && (
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => setSidebarOpen(true)}
+                    className="border-zinc-700 bg-zinc-900 text-zinc-300 hover:text-zinc-100 hover:border-zinc-600"
                   >
                     <ChevronRight className="h-4 w-4 mr-1" />
                     Open Market List
                   </Button>
                 )}
+              </div>
+              <div className="flex items-center justify-center gap-3 pt-3 text-[10px] text-zinc-700">
+                <span className="flex items-center gap-1">
+                  <kbd className="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">B</kbd>
+                  Buy
+                </span>
+                <span className="flex items-center gap-1">
+                  <kbd className="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">S</kbd>
+                  Sell
+                </span>
+                <span className="flex items-center gap-1">
+                  <kbd className="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">,</kbd>
+                  Settings
+                </span>
               </div>
             </div>
           </div>
