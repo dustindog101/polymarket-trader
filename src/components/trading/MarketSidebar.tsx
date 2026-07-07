@@ -450,7 +450,7 @@ export function MarketSidebar() {
           }`}
         />
         <span className="text-xs text-zinc-400">
-          {wsConnected ? 'WebSocket Live' : marketCategory === '5m' ? 'REST Polling (1.5s)' : 'REST Polling (3s)'}
+          {wsConnected ? 'WebSocket Live' : marketCategory === '5m' ? 'REST Polling (1s)' : 'REST Polling (3s)'}
         </span>
         {wsConnected ? (
           <Wifi className="ml-auto size-3.5 text-emerald-500" />

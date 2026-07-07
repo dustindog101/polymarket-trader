@@ -325,8 +325,10 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   setOrderType: (type) => set({ orderType: type }),
 
   // REST polling fallback — works without WS relay (Vercel serverless)
-  // For 5M/15M markets, polls faster (1.5s) because rounds resolve in 5 minutes
-  // and price discovery is intense near the end of each round.
+  // For 5M/15M markets, polls every 1s because rounds resolve in 5 minutes
+  // and the user is making real-time trading decisions. The orderbook panel
+  // and chart both subscribe to these updates, so 1s = visibly live.
+  // Other markets (daily, popular) keep the 3s cadence to be gentle on the API.
   startPolling: (tokenIds: string[]) => {
     // Don't poll if WS is connected
     if (get().wsConnected) return;
@@ -336,11 +338,9 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
     const existing = get().pollingInterval;
     if (existing) clearInterval(existing);
 
-    // Determine poll interval: 5M/15M markets resolve fast — poll every 1.5s.
-    // Other markets (daily, popular) keep the 3s cadence to be gentle on the API.
     const market = get().selectedMarket;
     const isFastMarket = !!(market?.durationMinutes && market.durationMinutes <= 15);
-    const intervalMs = isFastMarket ? 1500 : 3000;
+    const intervalMs = isFastMarket ? 1000 : 3000;
 
     // Initial fetch
     fetchPollingData(tokenIds);
@@ -367,10 +367,11 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
     }
   },
 
-  // Auto-refresh the 5M market list every 20 seconds so new rounds appear
+  // Auto-refresh the 5M market list every 10 seconds so new rounds appear
   // as old ones resolve. The deterministic-slug approach means a brand-new
-  // round may take ~30s to be indexed after its start time, so we re-fetch
-  // the full list on a 20s cadence (cheap — only 6 slug lookups).
+  // round may take ~30s to be indexed after its start time, but checking
+  // every 10s means we catch it as soon as it's available. Cheap — only
+  // 6 slug lookups per tick.
   startFiveMinuteRefresh: () => {
     const existing = get().fiveMinuteRefreshInterval;
     if (existing) return; // already running
@@ -383,7 +384,6 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
         const next: Market[] = data.fiveMinute || [];
         if (next.length === 0) return;
 
-        const prev = get().fiveMinuteMarkets;
         set({ fiveMinuteMarkets: next });
 
         // If a 5M market is currently selected and its round just transitioned,
@@ -397,7 +397,6 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
           if (replacement && replacement.id !== selected.id) {
             // Round transitioned — refresh history strip then swap selection
             get().fetchFiveMinuteHistory(selected.asset, selected.durationMinutes);
-            // Preserve nothing — the new round is a different market entirely
             get().selectMarket(replacement);
           } else if (replacement) {
             // Same round still live — update prices in-place without losing chart history
@@ -419,9 +418,9 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
       }
     };
 
-    // Run immediately, then every 20s
+    // Run immediately, then every 10s
     tick();
-    const interval = setInterval(tick, 20000);
+    const interval = setInterval(tick, 10000);
     set({ fiveMinuteRefreshInterval: interval });
   },
 
