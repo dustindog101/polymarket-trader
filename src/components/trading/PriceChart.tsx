@@ -1,15 +1,17 @@
 'use client';
 
-import React, { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, useState } from 'react';
 import {
   AreaChart,
   Area,
   XAxis,
   YAxis,
   CartesianGrid,
+  ReferenceLine,
   Tooltip as RechartsTooltip,
   ResponsiveContainer,
 } from 'recharts';
+import { TrendingUp, TrendingDown, Target } from 'lucide-react';
 import { useTradingStore, type PricePoint } from '@/stores/trading';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -34,48 +36,177 @@ function formatTimeFull(ts: number): string {
   });
 }
 
+function formatUsd(price: number): string {
+  if (price >= 1000) return `$${price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${price.toFixed(2)}`;
+}
+
+// ─── Types ───────────────────────────────────────────────────────────
+
+interface AssetPriceData {
+  spot: number;
+  historical: number | null; // target/strike price at round start
+  source: 'binance' | 'fallback';
+}
+
 // ─── Custom Tooltip ──────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function CustomTooltip({
-  active,
-  payload,
-  label,
-}: {
+interface TooltipProps {
   active?: boolean;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   payload?: any[];
   label?: number;
-}) {
+  assetPrice?: AssetPriceData | null;
+  assetSymbol?: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function CustomTooltip({ active, payload, label, assetPrice, assetSymbol }: TooltipProps) {
   if (!active || !payload?.length || !label) return null;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const point = payload[0]?.payload as (PricePoint & { timeStr?: string }) | undefined;
 
   return (
-    <div className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 shadow-lg">
-      <div className="text-[10px] text-zinc-500 mb-1">
+    <div className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 shadow-lg min-w-[180px]">
+      {/* Timestamp */}
+      <div className="text-[10px] text-zinc-500 mb-1.5 font-mono">
         {formatTimeFull(label)}
       </div>
+
+      {/* Outcome price (YES/NO shares) */}
       {payload.map((entry) => (
-        <div key={entry.dataKey} className="flex items-center gap-2 text-xs">
+        <div key={entry.dataKey} className="flex items-center gap-2 text-xs mb-0.5">
           <div
             className="size-2 rounded-full"
             style={{ backgroundColor: entry.color }}
           />
-          <span className="text-zinc-400 capitalize">{entry.dataKey}:</span>
-          <span className="font-mono text-zinc-100 font-medium">
+          <span className="text-zinc-400 capitalize w-8">{entry.dataKey}:</span>
+          <span className="font-mono text-zinc-100 font-medium ml-auto">
             {(entry.value * 100).toFixed(1)}¢
           </span>
         </div>
       ))}
-      {point?.size !== undefined && (
+
+      {/* Trade size if available */}
+      {point?.size !== undefined && point.size > 0 && (
         <div className="text-[10px] text-zinc-500 mt-0.5">
           Size: {point.size.toFixed(2)}
         </div>
       )}
+
+      {/* Divider */}
+      <div className="h-px bg-zinc-800 my-1.5" />
+
+      {/* Live BTC/ETH/SOL spot price */}
+      {assetPrice && assetPrice.spot > 0 && (
+        <div className="flex items-center gap-2 text-xs">
+          <TrendingUp className="size-3 text-emerald-400" />
+          <span className="text-zinc-400">{assetSymbol} now:</span>
+          <span className="font-mono text-emerald-400 font-semibold ml-auto">
+            {formatUsd(assetPrice.spot)}
+          </span>
+        </div>
+      )}
+
+      {/* Target/strike price (BTC price at round start) */}
+      {assetPrice?.historical && assetPrice.historical > 0 && (
+        <div className="flex items-center gap-2 text-xs">
+          <Target className="size-3 text-amber-400" />
+          <span className="text-zinc-400">Target:</span>
+          <span className="font-mono text-amber-400 font-semibold ml-auto">
+            {formatUsd(assetPrice.historical)}
+          </span>
+        </div>
+      )}
+
+      {/* Delta from target */}
+      {assetPrice?.spot && assetPrice?.historical && (
+        <div className="flex items-center gap-2 text-[10px] mt-0.5">
+          <span className="text-zinc-600">Δ:</span>
+          <span
+            className={`font-mono font-semibold ml-auto ${
+              assetPrice.spot >= assetPrice.historical ? 'text-emerald-400' : 'text-red-400'
+            }`}
+          >
+            {assetPrice.spot >= assetPrice.historical ? '+' : ''}
+            {formatUsd(assetPrice.spot - assetPrice.historical)} (
+            {((assetPrice.spot - assetPrice.historical) / assetPrice.historical * 100).toFixed(2)}%)
+          </span>
+        </div>
+      )}
     </div>
   );
+}
+
+// ─── Hook: poll asset spot price + fetch historical target ───────────
+
+function useAssetPrice(asset: string | null | undefined, roundStart: number | null | undefined) {
+  const [data, setData] = useState<AssetPriceData | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Fetch the historical target price ONCE when the round starts
+  // (or when asset/roundStart changes). This doesn't change during the round.
+  useEffect(() => {
+    if (!asset) return;
+    let cancelled = false;
+
+    async function fetchTarget() {
+      if (!asset) return;
+      setLoading(true);
+      try {
+        const url = roundStart
+          ? `/api/polymarket/price?asset=${asset}&at=${roundStart}`
+          : `/api/polymarket/price?asset=${asset}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) {
+          setData({
+            spot: json.spot,
+            historical: json.historical,
+            source: json.source,
+          });
+        }
+      } catch {
+        // silent
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    fetchTarget();
+    return () => {
+      cancelled = true;
+    };
+  }, [asset, roundStart]);
+
+  // Poll the SPOT price every 3 seconds (it changes continuously).
+  // The historical target price is already set from the effect above and
+  // doesn't need re-fetching.
+  useEffect(() => {
+    if (!asset) return;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/polymarket/price?asset=${asset}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        setData((prev) => ({
+          spot: json.spot,
+          historical: prev?.historical ?? json.historical,
+          source: json.source,
+        }));
+      } catch {
+        // silent
+      }
+    };
+
+    // Poll every 3s — spot price doesn't need sub-second updates in the
+    // tooltip (the user sees it when they hover, and 3s is fresh enough)
+    const interval = setInterval(poll, 3000);
+    return () => clearInterval(interval);
+  }, [asset]);
+
+  return { data, loading };
 }
 
 // ─── Component ───────────────────────────────────────────────────────
@@ -83,6 +214,12 @@ function CustomTooltip({
 export function PriceChart() {
   const { priceHistory, selectedTokenId, selectedMarket } = useTradingStore();
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Fetch the underlying asset (BTC/ETH/SOL) spot + target price
+  const { data: assetPrice, loading: assetPriceLoading } = useAssetPrice(
+    selectedMarket?.asset,
+    selectedMarket?.roundStart,
+  );
 
   const history: PricePoint[] = selectedTokenId
     ? priceHistory[selectedTokenId] ?? []
@@ -94,7 +231,6 @@ export function PriceChart() {
       return { chartData: [], hasDual: false };
     }
 
-    // If we have both token IDs, we can show both lines
     const otherTokenId = selectedMarket.clobTokenIds?.find(
       (id) => id !== selectedTokenId,
     );
@@ -103,7 +239,6 @@ export function PriceChart() {
       : [];
 
     if (otherHistory.length === 0 || !otherTokenId) {
-      // Single line
       const data = history.map((p) => ({
         time: p.timestamp,
         timeStr: formatTime(p.timestamp),
@@ -115,7 +250,6 @@ export function PriceChart() {
       return { chartData: data, hasDual: false };
     }
 
-    // Dual line — align by timestamp
     const otherMap = new Map(otherHistory.map((p) => [p.timestamp, p.price]));
 
     const data = history.map((p) => ({
@@ -130,17 +264,22 @@ export function PriceChart() {
     return { chartData: data, hasDual: true };
   }, [history, selectedMarket, selectedTokenId, priceHistory]);
 
-  // Auto-scroll to latest (recharts handles this via ResponsiveContainer,
-  // but we can limit displayed points for perf)
   const displayData = useMemo(() => {
     if (chartData.length <= 200) return chartData;
     return chartData.slice(-200);
   }, [chartData]);
 
-  // Determine outcome name for axis label
   const outcomeName = selectedMarket?.tokens?.find(
     (t) => t.token_id === selectedTokenId,
   )?.outcome ?? 'YES';
+
+  // Determine if the current asset price is above or below target
+  const spotVsTarget =
+    assetPrice?.spot && assetPrice?.historical
+      ? assetPrice.spot >= assetPrice.historical
+        ? 'up'
+        : 'down'
+      : null;
 
   if (!selectedTokenId) {
     return (
@@ -153,19 +292,19 @@ export function PriceChart() {
   }
 
   if (history.length === 0) {
-    // Show current price from market data while waiting for polling data
     const currentPrice = selectedMarket?.tokens?.find(
       (t) => t.token_id === selectedTokenId,
     )?.price ?? parseFloat(selectedMarket?.outcomePrices?.[0] ?? '0');
 
     return (
       <div className="flex h-full flex-col border border-zinc-800 rounded-lg bg-zinc-900/40">
-        <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
-          <span className="text-xs font-medium text-zinc-300">Price Chart</span>
-          <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">
-            {outcomeName}
-          </span>
-        </div>
+        <ChartHeader
+          outcomeName={outcomeName}
+          assetPrice={assetPrice}
+          assetSymbol={selectedMarket?.asset?.toUpperCase()}
+          spotVsTarget={spotVsTarget}
+          loading={assetPriceLoading}
+        />
         <div className="flex flex-1 items-center justify-center text-sm text-zinc-600">
           <div className="flex flex-col items-center gap-2">
             <div className="size-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" />
@@ -183,13 +322,13 @@ export function PriceChart() {
 
   return (
     <div className="flex h-full flex-col border border-zinc-800 rounded-lg bg-zinc-900/40 overflow-hidden" ref={scrollRef}>
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
-        <span className="text-xs font-medium text-zinc-300">Price Chart</span>
-        <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">
-          {outcomeName}
-        </span>
-      </div>
+      <ChartHeader
+        outcomeName={outcomeName}
+        assetPrice={assetPrice}
+        assetSymbol={selectedMarket?.asset?.toUpperCase()}
+        spotVsTarget={spotVsTarget}
+        loading={assetPriceLoading}
+      />
 
       {/* Chart */}
       <div className="flex-1 min-h-0 px-1 py-1">
@@ -234,12 +373,15 @@ export function PriceChart() {
             />
 
             <RechartsTooltip
-              content={<CustomTooltip />}
+              content={<CustomTooltip assetPrice={assetPrice} assetSymbol={selectedMarket?.asset?.toUpperCase()} />}
               cursor={{
                 stroke: '#3f3f46',
                 strokeDasharray: '4 4',
               }}
             />
+
+            {/* 50¢ reference line (50/50 odds) */}
+            <ReferenceLine y={0.5} stroke="#3f3f46" strokeDasharray="2 2" />
 
             {/* YES line (primary) */}
             <Area
@@ -279,6 +421,66 @@ export function PriceChart() {
           </AreaChart>
         </ResponsiveContainer>
       </div>
+    </div>
+  );
+}
+
+// ─── Chart Header with live asset price ticker ───────────────────────
+
+function ChartHeader({
+  outcomeName,
+  assetPrice,
+  assetSymbol,
+  spotVsTarget,
+  loading,
+}: {
+  outcomeName: string;
+  assetPrice: AssetPriceData | null;
+  assetSymbol?: string;
+  spotVsTarget: 'up' | 'down' | null;
+  loading: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2 gap-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-xs font-medium text-zinc-300">Price Chart</span>
+        <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium">
+          {outcomeName}
+        </span>
+      </div>
+      {/* Live asset price ticker */}
+      {assetSymbol && (
+        <div className="flex items-center gap-2 text-[10px] shrink-0">
+          {assetPrice?.spot && assetPrice.spot > 0 ? (
+            <>
+              <span className="text-zinc-500">{assetSymbol}:</span>
+              <span
+                className={`font-mono font-semibold ${
+                  spotVsTarget === 'up' ? 'text-emerald-400' : spotVsTarget === 'down' ? 'text-red-400' : 'text-zinc-300'
+                }`}
+              >
+                {formatUsd(assetPrice.spot)}
+              </span>
+              {assetPrice.historical && (
+                <span className="text-zinc-600 hidden sm:inline">
+                  tgt {formatUsd(assetPrice.historical)}
+                </span>
+              )}
+              {spotVsTarget && (
+                <span className={`flex items-center gap-0.5 ${spotVsTarget === 'up' ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {spotVsTarget === 'up' ? (
+                    <TrendingUp className="size-2.5" />
+                  ) : (
+                    <TrendingDown className="size-2.5" />
+                  )}
+                </span>
+              )}
+            </>
+          ) : loading ? (
+            <span className="text-zinc-600">Loading {assetSymbol}…</span>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
