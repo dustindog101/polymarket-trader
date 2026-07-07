@@ -111,3 +111,24 @@ Stage Summary:
   3. Full limit order options: GTC/GTD/FOK/FAK with descriptions + GTD datetime picker + Market mode (FAK at best price)
   4. Chart hover shows: outcome price, live BTC spot, target/strike price, delta with % + color
 - Production URL: https://polymarket-trader-sooty.vercel.app — live and verified
+
+---
+Task ID: 5
+Agent: main
+Task: Chart like Polymarket (price shown live, odds update real-time), 5M every-millisecond counts, old price = target to beat, UI polish.
+
+Work Log:
+- Phase 1 (live prices): Root cause identified — MarketHeader was reading UP/DOWN prices from `selectedMarket.outcomePrices` which only updates every 10s (5M refresh loop). New `useLivePrice` hook computes midpoint from the orderbook (which polls at 500ms). Header now reads `liveUpPrice ?? fallback`. UP/DOWN prices now tick in real-time. Also added `useAssetPrice` hook to MarketHeader (2s spot polling, was 3s) and a prominent 3-card "BTC Spot vs Target" panel showing: live spot (green/red), target/strike (amber, "price to beat"), and delta with "UP is winning"/"DOWN is winning" label. Committed + pushed.
+- Phase 2 (chart redesign): PriceChart rewritten Polymarket-style. Big live price overlay in top-left (2xl bold mono, green if >=50¢, red if <50¢, updates every 500ms from orderbook midpoint). BTC spot vs target overlay in top-right (spot with trend arrow + target with target icon). Chart header shows live UP/DOWN odds inline. New ReferenceLine at current UP price (dashed, moves with live price). Thicker YES line (2px). Shared `useLivePrice` + `useAssetPrice` hooks with MarketHeader. Committed + pushed.
+- Phase 3 (UI polish): CSS additions: `.pulse-live` (2s subtle pulse for live indicators), `.pulse-urgent` (0.8s fast pulse for countdowns <15s), `.price-tick` (smooth color transitions), `.chart-grid-bg` (Bloomberg-style grid texture), `.glass-panel` (frosted glass), tabular-nums enforcement, hidden number input spinners, snappier flash animations. Top bar rebranded as "POLYTERMINAL" with filled Zap icon, pulsing live dot, tighter spacing (h-11, px-3), icon-only Refresh/Settings buttons. Empty state redesigned with gradient icon box + grid texture + keyboard shortcut hints. Committed + pushed.
+- Phase 4 (deploy + verify): Vercel CLI failed with "Cannot read properties of undefined (reading 'value')" — appears to be a CLI bug or token scope issue. Vercel API also returned 403 forbidden for the team scope (SAML enforcement change). However, GitHub auto-deploy was still active — verified production at https://polymarket-trader-sooty.vercel.app already has the latest code: `orderbooks` hook in bundle ✓, chart overlay code in bundle ✓, `POLYTERMINAL` branding in HTML ✓, `chart-grid-bg` CSS class present ✓, BTC spot=$63,105 + target working ✓, 6 live 5M rounds ✓.
+
+Stage Summary:
+- 3 commits pushed (9b816d2 → 5511991)
+- Production live via GitHub auto-deploy at https://polymarket-trader-sooty.vercel.app
+- All user requests fulfilled:
+  1. Chart shows price right there (big 2xl overlay, updates every 500ms)
+  2. Odds/price on top update consistently (from orderbook midpoint, not 10s refresh)
+  3. "Old price" (target/strike to beat) shown in 3 places: chart overlay, chart header, MarketHeader panel
+  4. UI polished: Bloomberg/dYdX-inspired terminal aesthetic with pulsing live indicators, grid texture, tighter spacing, professional typography
+- Note: Vercel token (vcp_7DXUfGPW...) has lost team scope access due to SAML enforcement change — user needs to re-authenticate or create a new token with team access for future CLI deploys. GitHub auto-deploy still works.
