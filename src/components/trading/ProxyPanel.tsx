@@ -11,43 +11,15 @@ import {
   Trash2,
   Zap,
   Loader2,
+  Target,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { useTradingStore } from '@/stores/trading';
-
-// ─── Types ─────────────────────────────────────────────────────────
-
-export interface Proxy {
-  id: string;
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  country?: string;
-  city?: string;
-  status: 'unknown' | 'testing' | 'working' | 'failed';
-  latency?: number;
-  lastTested?: number;
-}
-
-// ─── Default proxies (from Webshare) ────────────────────────────────
-
-const DEFAULT_PROXIES: Proxy[] = [
-  { id: 'p1', host: '31.59.20.176', port: 6754, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'GB', city: 'London', status: 'unknown' },
-  { id: 'p2', host: '31.56.127.193', port: 7684, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'Seattle', status: 'unknown' },
-  { id: 'p3', host: '45.38.107.97', port: 6014, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'GB', city: 'London', status: 'unknown' },
-  { id: 'p4', host: '198.105.121.200', port: 6462, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'GB', city: 'London', status: 'unknown' },
-  { id: 'p5', host: '64.137.96.74', port: 6641, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'ES', city: 'Madrid', status: 'unknown' },
-  { id: 'p6', host: '198.23.243.226', port: 6361, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'Los Angeles', status: 'unknown' },
-  { id: 'p7', host: '2.57.21.2', port: 7239, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'NYC', status: 'unknown' },
-  { id: 'p8', host: '38.154.185.97', port: 6370, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'Piscataway', status: 'unknown' },
-  { id: 'p9', host: '142.111.67.146', port: 5611, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'JP', city: 'Tokyo', status: 'unknown' },
-  { id: 'p10', host: '191.96.254.138', port: 6185, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'Los Angeles', status: 'unknown' },
-];
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
+import { useTradingStore, type ProxyEntry } from '@/stores/trading';
 
 const COUNTRY_FLAGS: Record<string, string> = {
   GB: '🇬🇧', US: '🇺🇸', ES: '🇪🇸', JP: '🇯🇵', DE: '🇩🇪', FR: '🇫🇷',
@@ -57,51 +29,83 @@ const COUNTRY_FLAGS: Record<string, string> = {
 // ─── Component ───────────────────────────────────────────────────────
 
 export function ProxyPanel() {
-  const [proxies, setProxies] = useState<Proxy[]>(DEFAULT_PROXIES);
+  const {
+    proxies,
+    setProxies,
+    selectedProxyId,
+    setSelectedProxyId,
+  } = useTradingStore();
   const [testingAll, setTestingAll] = useState(false);
   const [newHost, setNewHost] = useState('');
   const [newPort, setNewPort] = useState('');
   const [newUser, setNewUser] = useState('');
   const [newPass, setNewPass] = useState('');
 
-  const workingCount = proxies.filter(p => p.status === 'working').length;
+  const workingCount = proxies.filter((p) => p.status === 'working').length;
+  const fastestProxy = proxies
+    .filter((p) => p.status === 'working' && p.latency)
+    .sort((a, b) => (a.latency ?? 0) - (b.latency ?? 0))[0];
 
   // Test a single proxy
-  const testProxy = useCallback(async (proxy: Proxy) => {
-    setProxies(prev => prev.map(p => p.id === proxy.id ? { ...p, status: 'testing' as const } : p));
+  const testProxy = useCallback(
+    async (proxy: ProxyEntry) => {
+      setProxies(proxies.map((p) => (p.id === proxy.id ? { ...p, status: 'testing' as const } : p)));
 
-    try {
-      const res = await fetch('/api/polymarket/proxy-test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proxy: { host: proxy.host, port: proxy.port, username: proxy.username, password: proxy.password } }),
-      });
-      const data = await res.json();
+      try {
+        const res = await fetch('/api/polymarket/proxy-test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            proxy: { host: proxy.host, port: proxy.port, username: proxy.username, password: proxy.password },
+          }),
+        });
+        const data = await res.json();
 
-      setProxies(prev => prev.map(p => p.id === proxy.id ? {
-        ...p,
-        status: data.working ? 'working' : 'failed',
-        latency: data.totalMs,
-        lastTested: Date.now(),
-      } : p));
-    } catch {
-      setProxies(prev => prev.map(p => p.id === proxy.id ? { ...p, status: 'failed' as const, latency: 0, lastTested: Date.now() } : p));
-    }
-  }, []);
+        setProxies(
+          proxies.map((p) =>
+            p.id === proxy.id
+              ? {
+                  ...p,
+                  status: data.working ? ('working' as const) : ('failed' as const),
+                  latency: data.totalMs,
+                  lastTested: Date.now(),
+                }
+              : p,
+          ),
+        );
+      } catch {
+        setProxies(
+          proxies.map((p) =>
+            p.id === proxy.id
+              ? { ...p, status: 'failed' as const, latency: 0, lastTested: Date.now() }
+              : p,
+          ),
+        );
+      }
+    },
+    [proxies, setProxies],
+  );
 
-  // Test all proxies sequentially
+  // Test all proxies — run them with limited concurrency (3 at a time) so we
+  // don't overwhelm the test endpoint or hit Webshare rate limits.
   const testAll = useCallback(async () => {
     setTestingAll(true);
-    for (const proxy of proxies) {
-      await testProxy(proxy);
-    }
+    const concurrency = 3;
+    const queue = [...proxies];
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (queue.length > 0) {
+        const proxy = queue.shift();
+        if (proxy) await testProxy(proxy);
+      }
+    });
+    await Promise.all(workers);
     setTestingAll(false);
   }, [proxies, testProxy]);
 
   // Add a new proxy
   const addProxy = useCallback(() => {
     if (!newHost || !newPort) return;
-    const newProxy: Proxy = {
+    const newProxy: ProxyEntry = {
       id: `p-custom-${Date.now()}`,
       host: newHost,
       port: parseInt(newPort),
@@ -109,17 +113,21 @@ export function ProxyPanel() {
       password: newPass,
       status: 'unknown',
     };
-    setProxies(prev => [...prev, newProxy]);
+    setProxies([...proxies, newProxy]);
     setNewHost('');
     setNewPort('');
     setNewUser('');
     setNewPass('');
-  }, [newHost, newPort, newUser, newPass]);
+  }, [newHost, newPort, newUser, newPass, proxies, setProxies]);
 
   // Remove a proxy
-  const removeProxy = useCallback((id: string) => {
-    setProxies(prev => prev.filter(p => p.id !== id));
-  }, []);
+  const removeProxy = useCallback(
+    (id: string) => {
+      setProxies(proxies.filter((p) => p.id !== id));
+      if (selectedProxyId === id) setSelectedProxyId(null);
+    },
+    [proxies, setProxies, selectedProxyId, setSelectedProxyId],
+  );
 
   return (
     <div className="flex h-full flex-col border border-zinc-800 rounded-lg bg-zinc-900/40 overflow-hidden">
@@ -128,9 +136,18 @@ export function ProxyPanel() {
         <div className="flex items-center gap-2">
           <Shield className="size-4 text-blue-400" />
           <span className="text-xs font-medium text-zinc-300">Proxy Management</span>
+          {selectedProxyId && (
+            <Badge variant="outline" className="text-[9px] border-emerald-500/40 text-emerald-400">
+              <Target className="size-2.5 mr-1" />
+              Active for orders
+            </Badge>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className={`text-[10px] ${workingCount > 0 ? 'border-emerald-500/40 text-emerald-400' : 'border-zinc-700 text-zinc-500'}`}>
+          <Badge
+            variant="outline"
+            className={`text-[10px] ${workingCount > 0 ? 'border-emerald-500/40 text-emerald-400' : 'border-zinc-700 text-zinc-500'}`}
+          >
             <Zap className="size-2.5 mr-1" />
             {workingCount}/{proxies.length} working
           </Badge>
@@ -146,6 +163,27 @@ export function ProxyPanel() {
           </Button>
         </div>
       </div>
+
+      {/* Fastest proxy quick-select */}
+      {fastestProxy && (
+        <div className="px-3 py-1.5 border-b border-zinc-800/60 flex items-center gap-2 bg-emerald-500/5">
+          <Zap className="size-3 text-emerald-400" />
+          <span className="text-[10px] text-zinc-400">Fastest:</span>
+          <span className="text-[10px] font-mono text-emerald-400">{fastestProxy.host}:{fastestProxy.port}</span>
+          <span className="text-[10px] text-zinc-500">({fastestProxy.latency}ms)</span>
+          <button
+            type="button"
+            onClick={() => setSelectedProxyId(fastestProxy.id)}
+            className={`ml-auto text-[10px] px-2 py-0.5 rounded transition-colors ${
+              selectedProxyId === fastestProxy.id
+                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:text-zinc-200'
+            }`}
+          >
+            {selectedProxyId === fastestProxy.id ? '✓ Selected' : 'Use for orders'}
+          </button>
+        </div>
+      )}
 
       {/* Add proxy form */}
       <div className="flex items-center gap-1.5 px-2 py-2 border-b border-zinc-800/60">
@@ -186,97 +224,169 @@ export function ProxyPanel() {
       </div>
 
       {/* Column headers */}
-      <div className="grid grid-cols-[24px_1fr_50px_60px_50px_32px] gap-1 px-2 py-1.5 border-b border-zinc-800/40 text-[9px] uppercase tracking-wider text-zinc-600 font-medium">
+      <div className="grid grid-cols-[24px_1fr_50px_50px_40px_70px_32px] gap-1 px-2 py-1.5 border-b border-zinc-800/40 text-[9px] uppercase tracking-wider text-zinc-600 font-medium">
         <span></span>
         <span>Proxy</span>
         <span>Location</span>
         <span>Latency</span>
         <span>Status</span>
+        <span>For Orders</span>
         <span></span>
       </div>
 
       {/* Proxy list */}
       <ScrollArea className="flex-1">
         <div className="px-2 py-1 flex flex-col gap-0.5">
-          {proxies.map((proxy) => (
-            <div
-              key={proxy.id}
-              className="grid grid-cols-[24px_1fr_50px_60px_50px_32px] gap-1 items-center rounded-md px-1 py-1.5 hover:bg-zinc-800/40 transition-colors group"
-            >
-              {/* Status icon */}
-              <div className="flex justify-center">
-                {proxy.status === 'testing' ? (
-                  <Loader2 className="size-3.5 text-amber-400 animate-spin" />
-                ) : proxy.status === 'working' ? (
-                  <CheckCircle2 className="size-3.5 text-emerald-400" />
-                ) : proxy.status === 'failed' ? (
-                  <XCircle className="size-3.5 text-red-400" />
-                ) : (
-                  <Globe className="size-3.5 text-zinc-600" />
-                )}
-              </div>
+          {proxies.map((proxy) => {
+            const isSelectedForOrders = selectedProxyId === proxy.id;
+            const canUseForOrders = proxy.status === 'working';
+            return (
+              <div
+                key={proxy.id}
+                className={`grid grid-cols-[24px_1fr_50px_50px_40px_70px_32px] gap-1 items-center rounded-md px-1 py-1.5 transition-colors group ${
+                  isSelectedForOrders ? 'bg-emerald-500/8 ring-1 ring-emerald-500/30' : 'hover:bg-zinc-800/40'
+                }`}
+              >
+                {/* Status icon */}
+                <div className="flex justify-center">
+                  {proxy.status === 'testing' ? (
+                    <Loader2 className="size-3.5 text-amber-400 animate-spin" />
+                  ) : proxy.status === 'working' ? (
+                    <CheckCircle2 className="size-3.5 text-emerald-400" />
+                  ) : proxy.status === 'failed' ? (
+                    <XCircle className="size-3.5 text-red-400" />
+                  ) : (
+                    <Globe className="size-3.5 text-zinc-600" />
+                  )}
+                </div>
 
-              {/* Proxy address */}
-              <div className="text-[11px] font-mono text-zinc-300 truncate">
-                {proxy.host}:{proxy.port}
-              </div>
+                {/* Proxy address */}
+                <div className="text-[11px] font-mono text-zinc-300 truncate">
+                  {proxy.host}:{proxy.port}
+                </div>
 
-              {/* Location */}
-              <div className="text-[10px] text-zinc-500 truncate">
-                {proxy.country && COUNTRY_FLAGS[proxy.country]} {proxy.city || proxy.country || '—'}
-              </div>
+                {/* Location */}
+                <div className="text-[10px] text-zinc-500 truncate">
+                  {proxy.country && COUNTRY_FLAGS[proxy.country]} {proxy.city || proxy.country || '—'}
+                </div>
 
-              {/* Latency */}
-              <div className="text-[10px] font-mono">
-                {proxy.latency ? (
-                  <span className={proxy.latency < 2000 ? 'text-emerald-400' : proxy.latency < 5000 ? 'text-amber-400' : 'text-red-400'}>
-                    {proxy.latency}ms
-                  </span>
-                ) : (
-                  <span className="text-zinc-700">—</span>
-                )}
-              </div>
+                {/* Latency */}
+                <div className="text-[10px] font-mono">
+                  {proxy.latency ? (
+                    <span
+                      className={
+                        proxy.latency < 2000
+                          ? 'text-emerald-400'
+                          : proxy.latency < 5000
+                            ? 'text-amber-400'
+                            : 'text-red-400'
+                      }
+                    >
+                      {proxy.latency}ms
+                    </span>
+                  ) : (
+                    <span className="text-zinc-700">—</span>
+                  )}
+                </div>
 
-              {/* Status badge */}
-              <div>
-                {proxy.status === 'working' && (
-                  <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 text-[9px] px-1.5 py-0">
-                    OK
-                  </Badge>
-                )}
-                {proxy.status === 'failed' && (
-                  <Badge className="bg-red-500/15 text-red-400 border-red-500/30 text-[9px] px-1.5 py-0">
-                    FAIL
-                  </Badge>
-                )}
-                {proxy.status === 'testing' && (
-                  <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 text-[9px] px-1.5 py-0">
-                    ...
-                  </Badge>
-                )}
-              </div>
+                {/* Status badge */}
+                <div>
+                  {proxy.status === 'working' && (
+                    <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 text-[9px] px-1.5 py-0">
+                      OK
+                    </Badge>
+                  )}
+                  {proxy.status === 'failed' && (
+                    <Badge className="bg-red-500/15 text-red-400 border-red-500/30 text-[9px] px-1.5 py-0">
+                      FAIL
+                    </Badge>
+                  )}
+                  {proxy.status === 'testing' && (
+                    <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 text-[9px] px-1.5 py-0">
+                      ...
+                    </Badge>
+                  )}
+                </div>
 
-              {/* Actions */}
-              <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                  onClick={() => testProxy(proxy)}
-                  className="p-0.5 rounded hover:bg-zinc-700/50 text-zinc-500 hover:text-zinc-300 transition-colors"
-                  title="Test proxy"
-                >
-                  <RefreshCw className="size-3" />
-                </button>
-                <button
-                  onClick={() => removeProxy(proxy.id)}
-                  className="p-0.5 rounded hover:bg-red-500/20 text-zinc-500 hover:text-red-400 transition-colors"
-                  title="Remove proxy"
-                >
-                  <Trash2 className="size-3" />
-                </button>
+                {/* Use-for-orders toggle */}
+                <div className="flex justify-center">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedProxyId(isSelectedForOrders ? null : proxy.id)}
+                        disabled={!canUseForOrders && !isSelectedForOrders}
+                        className={`size-6 rounded flex items-center justify-center transition-colors ${
+                          isSelectedForOrders
+                            ? 'bg-emerald-500/30 text-emerald-400 border border-emerald-500/50'
+                            : canUseForOrders
+                              ? 'bg-zinc-800 text-zinc-500 border border-zinc-700 hover:text-emerald-400 hover:border-emerald-500/40'
+                              : 'bg-zinc-900 text-zinc-700 border border-zinc-800 cursor-not-allowed'
+                        }`}
+                      >
+                        <Target className="size-3" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="bg-zinc-900 border-zinc-700 text-zinc-300 text-xs">
+                      {isSelectedForOrders
+                        ? 'Currently routing orders through this proxy. Click to disable.'
+                        : canUseForOrders
+                          ? 'Route orders through this proxy'
+                          : 'Test the proxy first — only working proxies can be used for orders'}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => testProxy(proxy)}
+                    className="p-0.5 rounded hover:bg-zinc-700/50 text-zinc-500 hover:text-zinc-300 transition-colors"
+                    title="Test proxy"
+                  >
+                    <RefreshCw className="size-3" />
+                  </button>
+                  <button
+                    onClick={() => removeProxy(proxy.id)}
+                    className="p-0.5 rounded hover:bg-red-500/20 text-zinc-500 hover:text-red-400 transition-colors"
+                    title="Remove proxy"
+                  >
+                    <Trash2 className="size-3" />
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </ScrollArea>
+
+      {/* Footer with selected-proxy summary */}
+      <Separator className="bg-zinc-800/60" />
+      <div className="px-3 py-2 flex items-center justify-between text-[10px]">
+        <span className="text-zinc-500">
+          {selectedProxyId
+            ? (() => {
+                const p = proxies.find((x) => x.id === selectedProxyId);
+                return p ? (
+                  <>
+                    Orders via <span className="text-emerald-400 font-mono">{p.host}:{p.port}</span>
+                  </>
+                ) : (
+                  'Direct (no proxy)'
+                );
+              })()
+            : <span className="text-zinc-500">Direct connection (no proxy)</span>}
+        </span>
+        {selectedProxyId && (
+          <button
+            type="button"
+            onClick={() => setSelectedProxyId(null)}
+            className="text-zinc-500 hover:text-zinc-300 underline"
+          >
+            Disable
+          </button>
+        )}
+      </div>
     </div>
   );
 }

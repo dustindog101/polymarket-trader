@@ -47,6 +47,9 @@ export function OrderTicket() {
     balance,
     orderPrefill,
     setOrderPrefill,
+    proxies,
+    selectedProxyId,
+    setSelectedProxyId,
   } = useTradingStore();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -126,6 +129,14 @@ export function OrderTicket() {
     setIsSubmitting(true);
 
     try {
+      // If a proxy is selected, route the order through it. The API route
+      // accepts an optional `proxy` field and uses undici's ProxyAgent to
+      // actually route the request (the standard fetch `proxy` option is
+      // not supported on Vercel serverless).
+      const selectedProxy = selectedProxyId
+        ? proxies.find((p) => p.id === selectedProxyId)
+        : null;
+
       const payload = {
         token_id: form.tokenId,
         side: form.side,
@@ -134,6 +145,16 @@ export function OrderTicket() {
         size: parseFloat(form.size),
         post_only: form.postOnly,
         market: selectedMarket.conditionId,
+        ...(selectedProxy
+          ? {
+              proxy: {
+                host: selectedProxy.host,
+                port: selectedProxy.port,
+                username: selectedProxy.username,
+                password: selectedProxy.password,
+              },
+            }
+          : {}),
       };
 
       const res = await fetch('/api/polymarket/orders', {
@@ -150,7 +171,9 @@ export function OrderTicket() {
 
       toast({
         title: `${form.side} order placed`,
-        description: `${form.side} ${parseFloat(form.size)} shares @ ${parseFloat(form.price).toFixed(1)}¢`,
+        description: selectedProxy
+          ? `${form.side} ${parseFloat(form.size)} shares @ ${parseFloat(form.price).toFixed(1)}¢ via ${selectedProxy.host}:${selectedProxy.port}`
+          : `${form.side} ${parseFloat(form.size)} shares @ ${parseFloat(form.price).toFixed(1)}¢`,
       });
 
       // Reset form
@@ -165,7 +188,7 @@ export function OrderTicket() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [isFormValid, form, selectedMarket, setShowOrderTicket]);
+  }, [isFormValid, form, selectedMarket, setShowOrderTicket, selectedProxyId, proxies]);
 
   const handleSideChange = (side: OrderSide) => {
     setOrderSide(side);
@@ -401,6 +424,37 @@ export function OrderTicket() {
               ${parseFloat(balance).toFixed(2)}
             </span>
           </div>
+
+          {/* Proxy selector — shows current route + lets user switch */}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-zinc-500 shrink-0">Order route:</span>
+            <Select
+              value={selectedProxyId ?? 'direct'}
+              onValueChange={(v) => setSelectedProxyId(v === 'direct' ? null : v)}
+            >
+              <SelectTrigger className="flex-1 h-8 border-zinc-800 bg-zinc-900/80 text-zinc-300 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-zinc-900 border-zinc-700 max-h-60">
+                <SelectItem value="direct" className="text-zinc-300 focus:bg-zinc-800">
+                  Direct (no proxy)
+                </SelectItem>
+                {proxies
+                  .filter((p) => p.status === 'working')
+                  .map((p) => (
+                    <SelectItem key={p.id} value={p.id} className="text-zinc-300 focus:bg-zinc-800">
+                      {p.host}:{p.port} ({p.latency}ms)
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {selectedProxyId &&
+            !proxies.find((p) => p.id === selectedProxyId && p.status === 'working') && (
+              <div className="text-[10px] text-amber-400">
+                Selected proxy is no longer marked working — test it again or pick another.
+              </div>
+            )}
         </div>
 
         {/* Submit */}

@@ -49,6 +49,61 @@ export interface FiveMinuteRound {
   closed: boolean;
 }
 
+/** A proxy definition. Stored in localStorage so user-added proxies persist. */
+export interface ProxyEntry {
+  id: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  country?: string;
+  city?: string;
+  status: 'unknown' | 'testing' | 'working' | 'failed';
+  latency?: number;
+  lastTested?: number;
+}
+
+/** The 10 default Webshare proxies — same list previously hardcoded in ProxyPanel. */
+export const DEFAULT_PROXIES: ProxyEntry[] = [
+  { id: 'p1', host: '31.59.20.176', port: 6754, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'GB', city: 'London', status: 'unknown' },
+  { id: 'p2', host: '31.56.127.193', port: 7684, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'Seattle', status: 'unknown' },
+  { id: 'p3', host: '45.38.107.97', port: 6014, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'GB', city: 'London', status: 'unknown' },
+  { id: 'p4', host: '198.105.121.200', port: 6462, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'GB', city: 'London', status: 'unknown' },
+  { id: 'p5', host: '64.137.96.74', port: 6641, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'ES', city: 'Madrid', status: 'unknown' },
+  { id: 'p6', host: '198.23.243.226', port: 6361, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'Los Angeles', status: 'unknown' },
+  { id: 'p7', host: '2.57.21.2', port: 7239, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'NYC', status: 'unknown' },
+  { id: 'p8', host: '38.154.185.97', port: 6370, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'Piscataway', status: 'unknown' },
+  { id: 'p9', host: '142.111.67.146', port: 5611, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'JP', city: 'Tokyo', status: 'unknown' },
+  { id: 'p10', host: '191.96.254.138', port: 6185, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'US', city: 'Los Angeles', status: 'unknown' },
+];
+
+const PROXIES_STORAGE_KEY = 'pmt-proxies-v1';
+const SELECTED_PROXY_STORAGE_KEY = 'pmt-selected-proxy-v1';
+
+/** Load saved proxies from localStorage on module init (client-side only).
+ * Falls back to DEFAULT_PROXIES if nothing saved or if running on server. */
+function loadProxiesFromStorage(): ProxyEntry[] {
+  if (typeof window === 'undefined') return DEFAULT_PROXIES;
+  try {
+    const raw = window.localStorage.getItem(PROXIES_STORAGE_KEY);
+    if (!raw) return DEFAULT_PROXIES;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    return DEFAULT_PROXIES;
+  } catch {
+    return DEFAULT_PROXIES;
+  }
+}
+
+function loadSelectedProxyFromStorage(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(SELECTED_PROXY_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export interface BookLevel {
   price: number;
   size: number;
@@ -126,6 +181,11 @@ interface TradingStore {
    * applying. Lets users click a level → ticket opens already filled in. */
   orderPrefill: { price?: number; size?: number; tokenId?: string; side?: 'BUY' | 'SELL' } | null;
 
+  // Proxies — shared between ProxyPanel and OrderTicket so the user can
+  // pick a working proxy to route the order through. Persisted to localStorage.
+  proxies: ProxyEntry[];
+  selectedProxyId: string | null; // null = direct (no proxy)
+
   // Actions
   setPopularMarkets: (markets: Market[]) => void;
   setCryptoMarkets: (markets: Market[]) => void;
@@ -154,6 +214,10 @@ interface TradingStore {
   setOrderPrefill: (p: { price?: number; size?: number; tokenId?: string; side?: 'BUY' | 'SELL' } | null) => void;
   /** Convenience: open the order ticket with everything pre-filled in one call. */
   quickOpenTicket: (p: { price?: number; size?: number; tokenId?: string; side?: 'BUY' | 'SELL' }) => void;
+
+  // Proxy actions
+  setProxies: (proxies: ProxyEntry[]) => void;
+  setSelectedProxyId: (id: string | null) => void;
   startPolling: (tokenIds: string[]) => void;
   stopPolling: () => void;
   startFiveMinuteRefresh: () => void;
@@ -188,6 +252,12 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   orderSide: 'BUY',
   orderType: 'GTC',
   orderPrefill: null,
+
+  // Default proxies from Webshare — same list that was previously hardcoded
+  // in ProxyPanel. Now lives in the store so the OrderTicket can read it.
+  // On the client, hydrate from localStorage so user-added proxies persist.
+  proxies: loadProxiesFromStorage(),
+  selectedProxyId: loadSelectedProxyFromStorage(),
 
   setPopularMarkets: (markets) => set({ popularMarkets: markets }),
   setCryptoMarkets: (markets) => set({ cryptoMarkets: markets }),
@@ -338,6 +408,32 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
       showOrderTicket: true,
       ...(p.side ? { orderSide: p.side } : {}),
     }),
+
+  // Proxy actions — persist to localStorage so user-added proxies survive
+  // page reloads. setProxies replaces the whole list (used by add/remove
+  // and by Test All which updates status). setSelectedProxyId controls
+  // which proxy the OrderTicket routes the order through (null = direct).
+  setProxies: (proxies) => {
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(PROXIES_STORAGE_KEY, JSON.stringify(proxies));
+      } catch {
+        // ignore quota errors
+      }
+    }
+    set({ proxies });
+  },
+  setSelectedProxyId: (id) => {
+    if (typeof window !== 'undefined') {
+      try {
+        if (id) window.localStorage.setItem(SELECTED_PROXY_STORAGE_KEY, id);
+        else window.localStorage.removeItem(SELECTED_PROXY_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+    }
+    set({ selectedProxyId: id });
+  },
 
   // REST polling fallback — works without WS relay (Vercel serverless)
   // For 5M/15M markets, polls every 1s because rounds resolve in 5 minutes
