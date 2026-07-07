@@ -90,3 +90,24 @@ Stage Summary:
 - Proxy: FULLY WORKING for the first time — both testing AND order routing use undici ProxyAgent
 - UI polish: keyboard shortcuts, kbd hint bar, tighter spacing
 - Known limitation: order placement itself requires proper CLOB V2 HMAC signing (pre-existing, separate task). The proxy routing infrastructure is in place and verified — once signing is added, orders will route through the selected proxy automatically.
+
+---
+Task ID: 4
+Agent: main
+Task: 5M polling at 500ms with setting, fix orderbook flashing, full limit order options, chart hover with BTC target price.
+
+Work Log:
+- Phase 1 (settings): Added PollingSettings interface (fastMarketMs/normalMarketMs/fiveMinuteRefreshMs) to the trading store with localStorage persistence. Default fastMarketMs=500ms (user's request). New SettingsDialog component with 4 presets (Ultra-Fast 250ms / Fast 500ms / Balanced 1s / Gentle 2s) + custom inputs + live preview. setPollingSettings action restarts polling immediately so new intervals take effect. Gear icon in top bar + ',' keyboard shortcut. Sidebar polling label shows actual configured interval. Committed + pushed.
+- Phase 2 (orderbook fix): Rewrote OrderbookPanel flash logic. Root causes: (a) flashKey in useMemo deps didn't actually memoize, (b) prevPriceRef updated in useEffect (after render) so flash check compared stale data, (c) stale entries in the prev-size Map when levels disappeared, (d) brief empty states showed 'No bids/asks' on every transient API hiccup. Fixes: BookRow compares against prevSizesRef updated synchronously during render, flash only fires on actual size change (brighter for increase, dimmer for decrease, no flash for new levels), useEffect cleans up stale Map entries, debounced empty state (500ms) with 'everHadData' tracking so first load shows 'Loading…' not 'No bids', prev-size refs cleared on token change. Committed + pushed.
+- Phase 3 (order types): Rewrote OrderTicket with LIMIT/MARKET mode toggle. Full CLOB V2 order types: GTC (Good Till Cancel), GTD (Good Till Date with datetime picker + 5m/15m/1h/Round-end presets), FOK (Fill or Kill), FAK (Fill and Kill/IOC). Each type has a description shown below the selector. MARKET mode forces FAK and shows 'Estimated Fill Price' from orderbook best bid/ask instead of a price input. Post-only only available for GTC/GTD (can't post-only a FOK/FAK) with warning. Extended PlaceOrderRequest with expiration/min_size/tick_size/neg_risk fields. 5M markets auto-set neg_risk=true + tick_size=0.001. Backend orders route forwards all new fields. Committed + pushed.
+- Phase 4 (chart hover): New /api/polymarket/price route fetches BTC/ETH/SOL spot + historical prices from Binance. Uses Binance.US first (Binance.com geo-blocks Vercel), then Binance.com, then hardcoded fallbacks. Historical price fetched via 1m klines (open price of the candle containing the target timestamp). PriceChart rewritten with useAssetPrice hook (fetches target once on round start, polls spot every 3s). Custom tooltip now shows: timestamp, outcome price, trade size, divider, live spot price (green), target/strike price (amber), delta with $ + % + color. Chart header shows live asset ticker: 'BTC: $63,489 tgt $63,523' with up/down trend arrow. Added 50¢ reference line to the chart. Committed + pushed.
+- Phase 5 (deploy + verify): Built, deployed to Vercel production at https://polymarket-trader-sooty.vercel.app. Initial deploy had Binance.com geo-block issue (returned fallback prices). Fixed by switching to Binance.US first. Redeployed. Production test: BTC spot=$63,489 + target=$63,523 source=binance ✓, ETH=$1,780 ✓, SOL=$81.45 ✓, 5M markets=6 live rounds ✓, orderbook=9 bids/90 asks ✓, homepage=200 ✓.
+
+Stage Summary:
+- 6 commits pushed (7c4e9ea → 64d1aaf) across 5 phases
+- All 4 user requests fulfilled:
+  1. 5M polling at 500ms (configurable via Settings, default 500ms, can go as low as 100ms)
+  2. Orderbook no longer flashes constantly — only flashes on actual size changes at a price level, and debounces empty states
+  3. Full limit order options: GTC/GTD/FOK/FAK with descriptions + GTD datetime picker + Market mode (FAK at best price)
+  4. Chart hover shows: outcome price, live BTC spot, target/strike price, delta with % + color
+- Production URL: https://polymarket-trader-sooty.vercel.app — live and verified
