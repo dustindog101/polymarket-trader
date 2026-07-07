@@ -81,6 +81,10 @@ export function KeyboardShortcuts() {
           // The Proxies button has the Shield icon — find by its tooltip
           document.querySelector<HTMLButtonElement>('button[title="Proxy Management"]')?.click();
           break;
+        case ',':
+          // Settings — gear icon button
+          document.querySelector<HTMLButtonElement>('button[title="Settings"]')?.click();
+          break;
         case 'h':
         case 'H':
           // Previous Rounds — find the button by its text content

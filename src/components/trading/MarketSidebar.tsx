@@ -82,6 +82,7 @@ export function MarketSidebar() {
     isLoadingMarkets,
     marketCategory,
     wsConnected,
+    pollingSettings,
     selectMarket,
     setSearchQuery,
     setMarketCategory,
@@ -450,7 +451,11 @@ export function MarketSidebar() {
           }`}
         />
         <span className="text-xs text-zinc-400">
-          {wsConnected ? 'WebSocket Live' : marketCategory === '5m' ? 'REST Polling (1s)' : 'REST Polling (3s)'}
+          {wsConnected
+            ? 'WebSocket Live'
+            : marketCategory === '5m'
+              ? `REST Polling (${(pollingSettings.fastMarketMs / 1000).toFixed(2)}s)`
+              : `REST Polling (${(pollingSettings.normalMarketMs / 1000).toFixed(1)}s)`}
         </span>
         {wsConnected ? (
           <Wifi className="ml-auto size-3.5 text-emerald-500" />
@@ -469,6 +474,8 @@ export function MarketSidebar() {
         <span className="text-zinc-700">search</span>
         <kbd className="px-1 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">P</kbd>
         <span className="text-zinc-700">proxies</span>
+        <kbd className="px-1 py-0.5 rounded bg-zinc-900 border border-zinc-800 font-mono">,</kbd>
+        <span className="text-zinc-700">settings</span>
       </div>
     </aside>
   );

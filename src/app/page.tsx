@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useCallback, useState } from 'react';
-import { Activity, Wallet, RefreshCw, ChevronLeft, ChevronRight, Zap, DollarSign, Shield } from 'lucide-react';
+import { Activity, Wallet, RefreshCw, ChevronLeft, ChevronRight, Zap, DollarSign, Shield, Settings as SettingsIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -16,6 +16,7 @@ import { OpenOrders } from '@/components/trading/OpenOrders';
 import { FillHistory } from '@/components/trading/FillHistory';
 import { ProxyPanel } from '@/components/trading/ProxyPanel';
 import { KeyboardShortcuts } from '@/components/trading/KeyboardShortcuts';
+import { SettingsDialog } from '@/components/trading/SettingsDialog';
 
 export default function Home() {
   const {
@@ -40,6 +41,7 @@ export default function Home() {
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showProxies, setShowProxies] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [balanceDisplay, setBalanceDisplay] = useState<string | null>(null);
 
   // Fetch markets on mount
@@ -243,6 +245,21 @@ export default function Home() {
               </TooltipTrigger>
               <TooltipContent side="bottom">Reload Markets (R)</TooltipContent>
             </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  onClick={() => setShowSettings(true)}
+                  title="Settings"
+                >
+                  <SettingsIcon className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Settings — polling speed (,)</TooltipContent>
+            </Tooltip>
           </div>
         </header>
 
@@ -320,6 +337,9 @@ export default function Home() {
 
       {/* Global keyboard shortcuts — no UI, just side effects */}
       <KeyboardShortcuts />
+
+      {/* Settings dialog — polling speed + future prefs */}
+      <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
     </div>
   );
 }

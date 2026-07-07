@@ -63,6 +63,20 @@ export interface ProxyEntry {
   lastTested?: number;
 }
 
+/** User-configurable polling intervals (milliseconds). Persisted to localStorage.
+ *  The user wants the 5M markets to feel as close to real-time as possible, so
+ *  the default is 500ms — aggressive but still well within Polymarket's public
+ *  API rate limits (the CLOB /book endpoint is unauthenticated and cheap). */
+export interface PollingSettings {
+  /** Polling cadence for 5M/15M markets. Default 500ms. Min 250ms (faster = more
+   *  API calls, but the CLOB /book endpoint can handle it). */
+  fastMarketMs: number;
+  /** Polling cadence for non-fast markets (daily BTC, popular, crypto). Default 3000ms. */
+  normalMarketMs: number;
+  /** Auto-refresh cadence for the 5M market list (round transitions). Default 10000ms. */
+  fiveMinuteRefreshMs: number;
+}
+
 /** The 10 default Webshare proxies — same list previously hardcoded in ProxyPanel. */
 export const DEFAULT_PROXIES: ProxyEntry[] = [
   { id: 'p1', host: '31.59.20.176', port: 6754, username: 'zbmaeavo', password: 'wzd3slu8ahvs', country: 'GB', city: 'London', status: 'unknown' },
@@ -79,6 +93,16 @@ export const DEFAULT_PROXIES: ProxyEntry[] = [
 
 const PROXIES_STORAGE_KEY = 'pmt-proxies-v1';
 const SELECTED_PROXY_STORAGE_KEY = 'pmt-selected-proxy-v1';
+const POLLING_SETTINGS_STORAGE_KEY = 'pmt-polling-settings-v1';
+
+/** Default polling settings — 5M markets poll every 500ms by default. The
+ *  user specifically asked for sub-second updates on 5M markets so they can
+ *  make fast trading decisions. */
+export const DEFAULT_POLLING_SETTINGS: PollingSettings = {
+  fastMarketMs: 500,
+  normalMarketMs: 3000,
+  fiveMinuteRefreshMs: 10000,
+};
 
 /** Load saved proxies from localStorage on module init (client-side only).
  * Falls back to DEFAULT_PROXIES if nothing saved or if running on server. */
@@ -101,6 +125,20 @@ function loadSelectedProxyFromStorage(): string | null {
     return window.localStorage.getItem(SELECTED_PROXY_STORAGE_KEY);
   } catch {
     return null;
+  }
+}
+
+/** Load polling settings from localStorage, falling back to defaults. */
+function loadPollingSettingsFromStorage(): PollingSettings {
+  if (typeof window === 'undefined') return DEFAULT_POLLING_SETTINGS;
+  try {
+    const raw = window.localStorage.getItem(POLLING_SETTINGS_STORAGE_KEY);
+    if (!raw) return DEFAULT_POLLING_SETTINGS;
+    const parsed = JSON.parse(raw);
+    // Merge with defaults so missing fields get filled in
+    return { ...DEFAULT_POLLING_SETTINGS, ...parsed };
+  } catch {
+    return DEFAULT_POLLING_SETTINGS;
   }
 }
 
@@ -186,6 +224,10 @@ interface TradingStore {
   proxies: ProxyEntry[];
   selectedProxyId: string | null; // null = direct (no proxy)
 
+  // Polling settings — configurable via the Settings dialog. Persisted to
+  // localStorage. The user wants 5M markets to poll at 500ms by default.
+  pollingSettings: PollingSettings;
+
   // Actions
   setPopularMarkets: (markets: Market[]) => void;
   setCryptoMarkets: (markets: Market[]) => void;
@@ -218,6 +260,12 @@ interface TradingStore {
   // Proxy actions
   setProxies: (proxies: ProxyEntry[]) => void;
   setSelectedProxyId: (id: string | null) => void;
+
+  // Polling settings actions
+  setPollingSettings: (settings: PollingSettings) => void;
+  /** Restart polling with current settings — called after settings change
+   *  so the new interval takes effect immediately. */
+  restartPolling: () => void;
   startPolling: (tokenIds: string[]) => void;
   stopPolling: () => void;
   startFiveMinuteRefresh: () => void;
@@ -258,6 +306,9 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   // On the client, hydrate from localStorage so user-added proxies persist.
   proxies: loadProxiesFromStorage(),
   selectedProxyId: loadSelectedProxyFromStorage(),
+
+  // Polling settings — 5M markets default to 500ms (user's request).
+  pollingSettings: loadPollingSettingsFromStorage(),
 
   setPopularMarkets: (markets) => set({ popularMarkets: markets }),
   setCryptoMarkets: (markets) => set({ cryptoMarkets: markets }),
@@ -435,11 +486,36 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
     set({ selectedProxyId: id });
   },
 
+  // Polling settings — persist to localStorage and restart polling so the
+  // new interval takes effect immediately for the currently-selected market.
+  setPollingSettings: (settings) => {
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(POLLING_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+      } catch {
+        // ignore quota errors
+      }
+    }
+    set({ pollingSettings: settings });
+    // Restart polling + 5M refresh so new intervals apply right now
+    get().restartPolling();
+  },
+  restartPolling: () => {
+    // Restart the per-market orderbook/price polling
+    const market = get().selectedMarket;
+    if (market?.clobTokenIds?.length && !get().wsConnected) {
+      get().stopPolling();
+      get().startPolling(market.clobTokenIds);
+    }
+    // Restart the 5M market-list auto-refresh
+    get().stopFiveMinuteRefresh();
+    get().startFiveMinuteRefresh();
+  },
+
   // REST polling fallback — works without WS relay (Vercel serverless)
-  // For 5M/15M markets, polls every 1s because rounds resolve in 5 minutes
-  // and the user is making real-time trading decisions. The orderbook panel
-  // and chart both subscribe to these updates, so 1s = visibly live.
-  // Other markets (daily, popular) keep the 3s cadence to be gentle on the API.
+  // For 5M/15M markets, polls at the user-configured fastMarketMs interval
+  // (default 500ms — the user wants sub-second updates for fast decisions).
+  // Other markets (daily, popular) use normalMarketMs (default 3000ms).
   startPolling: (tokenIds: string[]) => {
     // Don't poll if WS is connected
     if (get().wsConnected) return;
@@ -451,7 +527,8 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
 
     const market = get().selectedMarket;
     const isFastMarket = !!(market?.durationMinutes && market.durationMinutes <= 15);
-    const intervalMs = isFastMarket ? 1000 : 3000;
+    const settings = get().pollingSettings;
+    const intervalMs = isFastMarket ? settings.fastMarketMs : settings.normalMarketMs;
 
     // Initial fetch
     fetchPollingData(tokenIds);
@@ -529,9 +606,10 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
       }
     };
 
-    // Run immediately, then every 10s
+    // Run immediately, then at the configured cadence (default 10s)
     tick();
-    const interval = setInterval(tick, 10000);
+    const intervalMs = get().pollingSettings.fiveMinuteRefreshMs;
+    const interval = setInterval(tick, intervalMs);
     set({ fiveMinuteRefreshInterval: interval });
   },
 
