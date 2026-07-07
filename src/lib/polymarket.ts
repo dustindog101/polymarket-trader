@@ -48,6 +48,7 @@ export function normalizeMarket(raw: any): GammaMarket {
     token_id: clobTokenIds[i] || '',
     outcome,
     price: parseFloat(outcomePrices[i] || '0'),
+    winner: typeof raw.tokens?.[i]?.winner === 'boolean' ? raw.tokens[i].winner : null,
   }));
 
   return {
@@ -79,6 +80,11 @@ export function normalizeMarket(raw: any): GammaMarket {
     tokens,
     resolutionSource: raw.resolutionSource ?? null,
     description: raw.description ?? '',
+    // 5M / 15M "Up or Down" market metadata (populated by get5mMarkets/get5mHistory)
+    asset: raw.asset ?? null,
+    durationMinutes: raw.durationMinutes ?? null,
+    roundStart: raw.roundStart ?? null,
+    roundEnd: raw.roundEnd ?? null,
   };
 }
 
@@ -114,9 +120,15 @@ export interface GammaMarket {
     token_id: string;
     outcome: string;
     price: number;
+    winner?: boolean | null;
   }>;
   resolutionSource: string | null;
   description: string;
+  // 5M / 15M "Up or Down" market metadata (only present for minute markets)
+  asset?: 'btc' | 'eth' | 'sol' | null;
+  durationMinutes?: number | null;
+  roundStart?: number | null;  // unix seconds
+  roundEnd?: number | null;    // unix seconds
 }
 
 export async function searchMarkets(query: string, limit = 20): Promise<GammaMarket[]> {
@@ -320,6 +332,129 @@ export async function getBtcDailyMarkets(): Promise<GammaMarket[]> {
   });
 
   return allMarkets.slice(0, 40);
+}
+
+// ─── 5M / 15M "Up or Down" crypto markets ────────────────────────────
+//
+// Polymarket's fastest markets — BTC/ETH/SOL "Up or Down" prediction rounds
+// that resolve every 5 or 15 minutes. These are NOT discoverable via the
+// standard Gamma search/pagination APIs because there's indexing latency
+// between on-chain creation and API availability.
+//
+// The trick (discovered via handiko/Polymarket-Market-Finder): the slug
+// pattern is deterministic from the current Unix timestamp rounded down
+// to the round interval:
+//
+//   slug = "{asset}-updown-{duration}m-{roundedTimestamp}"
+//
+// So we can fetch the live round directly via:
+//   GET /events/slug/{slug}
+//
+// These markets have REAL CLOB orderbooks (unlike the daily "above $X"
+// markets which have empty books) — so orderbook polling works for charts.
+
+export type CryptoAsset = 'btc' | 'eth' | 'sol';
+export const FIVE_MINUTE_ASSETS: CryptoAsset[] = ['btc', 'eth', 'sol'];
+export const FIVE_MINUTE_DURATIONS = [5, 15] as const;
+
+/** Build the deterministic slug for a 5M/15M "Up or Down" round. */
+export function buildUpdownSlug(
+  asset: CryptoAsset,
+  durationMinutes: number,
+  atTimeSeconds: number,
+): string {
+  const interval = durationMinutes * 60;
+  const rounded = Math.floor(atTimeSeconds / interval) * interval;
+  return `${asset}-updown-${durationMinutes}m-${rounded}`;
+}
+
+/** Fetch a single 5M/15M round by slug. Returns null if the round doesn't exist yet. */
+export async function getUpdownRound(
+  asset: CryptoAsset,
+  durationMinutes: number,
+  atTimeSeconds: number = Math.floor(Date.now() / 1000),
+): Promise<GammaMarket | null> {
+  const slug = buildUpdownSlug(asset, durationMinutes, atTimeSeconds);
+  const interval = durationMinutes * 60;
+  const rounded = Math.floor(atTimeSeconds / interval) * interval;
+
+  const res = await fetch(`${GAMMA_URL}/events/slug/${slug}`, {
+    headers: {
+      'User-Agent': 'polymarket-trader/2.2 (+https://polymarket.com)',
+      'Accept': 'application/json',
+    },
+    cache: 'no-store',
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  const rawMarkets: any[] = data?.markets ?? [];
+  if (rawMarkets.length === 0) return null;
+  const market = normalizeMarket(rawMarkets[0]);
+  // Stamp the 5M metadata so the client can render countdown / detect round transitions
+  market.asset = asset;
+  market.durationMinutes = durationMinutes;
+  market.roundStart = rounded;
+  market.roundEnd = rounded + interval;
+  return market;
+}
+
+/**
+ * Fetch the current live 5M/15M rounds for all assets × durations.
+ * Returns a flat array (typically 6 markets: 3 assets × 2 durations).
+ * If a round hasn't been indexed yet (rare race), it's silently dropped.
+ */
+export async function get5mMarkets(): Promise<GammaMarket[]> {
+  const tasks: Promise<GammaMarket | null>[] = [];
+  for (const asset of FIVE_MINUTE_ASSETS) {
+    for (const duration of FIVE_MINUTE_DURATIONS) {
+      tasks.push(getUpdownRound(asset, duration));
+    }
+  }
+  const results = await Promise.allSettled(tasks);
+  const markets: GammaMarket[] = [];
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value) markets.push(r.value);
+  }
+  // Sort: 5m first (faster = more interesting), then BTC > ETH > SOL
+  const assetOrder: Record<CryptoAsset, number> = { btc: 0, eth: 1, sol: 2 };
+  markets.sort((a, b) => {
+    const da = a.durationMinutes ?? 99;
+    const db = b.durationMinutes ?? 99;
+    if (da !== db) return da - db;
+    return (assetOrder[a.asset ?? 'btc'] ?? 99) - (assetOrder[b.asset ?? 'btc'] ?? 99);
+  });
+  return markets;
+}
+
+/**
+ * Fetch the previous N resolved rounds for an asset/duration.
+ * Each entry has `closed: true` and `outcomePrices` like ["1","0"] (Up won)
+ * or ["0","1"] (Down won).
+ *
+ * `count` rounds are fetched backwards from the round immediately before
+ * the current live round. Returns newest-first.
+ */
+export async function get5mHistory(
+  asset: CryptoAsset,
+  durationMinutes: number,
+  count = 10,
+): Promise<GammaMarket[]> {
+  const interval = durationMinutes * 60;
+  const now = Math.floor(Date.now() / 1000);
+  const currentRoundStart = Math.floor(now / interval) * interval;
+
+  const tasks: Promise<GammaMarket | null>[] = [];
+  for (let i = 1; i <= count; i++) {
+    const roundStart = currentRoundStart - i * interval;
+    tasks.push(getUpdownRound(asset, durationMinutes, roundStart + interval / 2));
+  }
+
+  const results = await Promise.allSettled(tasks);
+  const history: GammaMarket[] = [];
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value) history.push(r.value);
+  }
+  return history; // newest first (i=1, then i=2, ...)
 }
 
 // ─── CLOB API (public read endpoints) ───────────────────────────────

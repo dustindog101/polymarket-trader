@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.2.0] — 2026-07-07 — 5M / 15M "Up or Down" Crypto Markets
+
+### Key Changes
+- **5M markets now work end-to-end.** The previous release's note that "Polymarket does NOT have 5-minute or 15-minute BTC markets" was incorrect — they exist and are accessible via deterministic timestamp-based slugs. With this release, all 6 live rounds (BTC/ETH/SOL × 5m/15m) are now browsable, selectable, and tradeable in the terminal.
+- **New "5M" tab is the default landing tab** — these are Polymarket's fastest-resolving markets (5-minute rounds) and the user's stated #1 priority.
+- **Real CLOB orderbooks for 5M markets.** Unlike the daily "Bitcoin above $X" markets (which have empty books and rely on Gamma re-fetch), the 5M markets have real bid/ask depth on the CLOB — so the orderbook panel and chart midpoint derivation both work natively.
+- **Round-transition automation.** A 20-second refresh loop re-fetches the 6 live rounds. When the currently-selected 5M market resolves and the next round becomes available, the new round is auto-selected for the same asset/duration so the user sees a seamless transition. The previous round's outcome (Up/Down) immediately appears in the history strip.
+- **10-round history strip.** The market header for any 5M market shows the last 10 resolved rounds as compact ↑/↓ pills with tooltips — giving instant context on the asset's recent directional momentum.
+- **Faster polling for 5M markets.** The REST polling cadence is 1.5s (vs the 3s default) when a 5M/15M market is selected, because rounds resolve in 5 minutes and price discovery is intense near the end of each round.
+
+### How It Works
+- Polymarket mints each 5M/15M round with a deterministic slug pattern: `{asset}-updown-{duration}m-{unixTimestampRoundedToInterval}`. Example: `btc-updown-5m-1783383900` for the BTC 5M round starting at Unix timestamp 1783383900.
+- Fetching `/events/slug/{slug}` from the Gamma API returns the full market record (clobTokenIds, outcomePrices, endDate, etc.) directly — bypassing the indexing latency that breaks the standard search/pagination endpoints for these short-lived markets.
+- Previous rounds are fetched by subtracting `i * interval` from the current rounded timestamp. Resolved rounds have binary `outcomePrices` (`["1","0"]` = Up won, `["0","1"]` = Down won).
+
+### New API Endpoints
+- `GET /api/polymarket/5m` — Returns the 6 current live 5M/15M rounds (BTC/ETH/SOL × 5m/15m)
+- `GET /api/polymarket/5m/history?asset=btc&duration=5&count=10` — Returns the previous N resolved rounds for a single asset/duration, with derived `winner: "up" | "down" | null`
+- `GET /api/polymarket/markets` — Now also returns `fiveMinute` array alongside `popular`/`crypto`/`btc`
+
+### Files Changed
+- `src/lib/polymarket.ts` — Added `buildUpdownSlug()`, `getUpdownRound()`, `get5mMarkets()`, `get5mHistory()`, `CryptoAsset` type. Extended `GammaMarket` interface with `asset`, `durationMinutes`, `roundStart`, `roundEnd` fields and optional `winner` on tokens.
+- `src/app/api/polymarket/markets/route.ts` — Returns `fiveMinute` array
+- `src/app/api/polymarket/5m/route.ts` (NEW) — Current 5M markets + history mode
+- `src/app/api/polymarket/5m/history/route.ts` (NEW) — Dedicated history endpoint
+- `src/stores/trading.ts` — Added `fiveMinuteMarkets`, `fiveMinuteHistory`, `FiveMinuteRound` type, `'5m'` category. Added `startFiveMinuteRefresh`/`stopFiveMinuteRefresh` (20s round-transition watcher), `fetchFiveMinuteHistory`, `refreshSelectedFiveMinuteMarket`. Polling uses 1.5s for 5M markets. Default tab is now `'5m'`.
+- `src/components/trading/MarketSidebar.tsx` — New "5M" tab (leftmost, default). New `FiveMinuteMarketCard` with live MM:SS countdown (amber <60s, red+pulse <15s), asset icon, duration badge, UP/DN prices, last-round outcome.
+- `src/components/trading/MarketHeader.tsx` — For 5M markets: prominent "Round ends in MM:SS" panel with urgency colors, 10-round ↑↓ history strip with tooltips, asset+duration badge, UP/DN labels with arrow icons.
+- `src/app/page.tsx` — Fetches `fiveMinute` array on mount, starts the 20s 5M refresh loop (cleared on unmount).
+
+### Important Notes
+- The previous handoff doc's claim that 5M markets were "NOT accessible via API" was wrong. The discovery pattern (deterministic Unix-timestamp slugs) was independently documented by [handiko/Polymarket-Market-Finder](https://github.com/handiko/Polymarket-Market-Finder).
+- The 5M markets tab works fully serverless on Vercel — no WebSocket relay required. The 20s auto-refresh handles round transitions, and the 1.5s polling handles within-round price updates.
+- Order placement for 5M markets uses the same CLOB V2 API as other markets — no special handling needed.
+
 ## [2.1.0] — 2026-07-07 — Serverless Polling + BTC Daily Markets
 
 ### Key Changes

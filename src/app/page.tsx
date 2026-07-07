@@ -25,6 +25,7 @@ export default function Home() {
     setPopularMarkets,
     setCryptoMarkets,
     setBtcMarkets,
+    setFiveMinuteMarkets,
     setIsLoadingMarkets,
     setBalance,
     setSelectedTokenId,
@@ -32,6 +33,8 @@ export default function Home() {
     updateOrderbook,
     startPolling,
     stopPolling,
+    startFiveMinuteRefresh,
+    stopFiveMinuteRefresh,
   } = useTradingStore();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -47,12 +50,13 @@ export default function Home() {
       if (data.popular) setPopularMarkets(data.popular);
       if (data.crypto) setCryptoMarkets(data.crypto);
       if (data.btc) setBtcMarkets(data.btc);
+      if (data.fiveMinute) setFiveMinuteMarkets(data.fiveMinute);
     } catch (e) {
       console.error('Failed to fetch markets:', e);
     } finally {
       setIsLoadingMarkets(false);
     }
-  }, [setPopularMarkets, setCryptoMarkets, setBtcMarkets, setIsLoadingMarkets]);
+  }, [setPopularMarkets, setCryptoMarkets, setBtcMarkets, setFiveMinuteMarkets, setIsLoadingMarkets]);
 
   // Fetch balance
   const fetchBalance = useCallback(async () => {
@@ -74,7 +78,16 @@ export default function Home() {
     fetchBalance();
     // Try WS connection (will gracefully fail on Vercel, triggering polling)
     connectWs();
-  }, [fetchMarkets, fetchBalance, connectWs]);
+    // Start the 5M round-transition watcher. It re-fetches the 6 live
+    // rounds every 20s and auto-selects the new round when the currently-
+    // selected 5M market resolves. Stays running for the whole session —
+    // cheap (6 slug lookups per tick) and means the user always sees the
+    // current live round without manual refreshes.
+    startFiveMinuteRefresh();
+    return () => {
+      stopFiveMinuteRefresh();
+    };
+  }, [fetchMarkets, fetchBalance, connectWs, startFiveMinuteRefresh, stopFiveMinuteRefresh]);
 
   // When market is selected, set token ID, subscribe WS, start polling
   useEffect(() => {

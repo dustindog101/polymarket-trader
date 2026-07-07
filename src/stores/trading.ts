@@ -28,7 +28,25 @@ export interface Market {
   clobTokenIds: string[];
   conditionId: string;
   description: string;
-  tokens: Array<{ token_id: string; outcome: string; price: number }>;
+  tokens: Array<{ token_id: string; outcome: string; price: number; winner?: boolean | null }>;
+  // 5M / 15M "Up or Down" market metadata (only present for minute markets)
+  asset?: 'btc' | 'eth' | 'sol' | null;
+  durationMinutes?: number | null;
+  roundStart?: number | null;  // unix seconds
+  roundEnd?: number | null;    // unix seconds
+}
+
+/** Compact representation of a resolved 5M round for the history strip. */
+export interface FiveMinuteRound {
+  id: string;
+  question: string;
+  slug: string;
+  endDate: string;
+  roundStart: number | null;
+  roundEnd: number | null;
+  outcomePrices: string[];
+  winner: 'up' | 'down' | null;
+  closed: boolean;
 }
 
 export interface BookLevel {
@@ -70,11 +88,13 @@ interface TradingStore {
   popularMarkets: Market[];
   cryptoMarkets: Market[];
   btcMarkets: Market[];
+  fiveMinuteMarkets: Market[];        // current live 5M/15M rounds (BTC/ETH/SOL × 5/15min)
+  fiveMinuteHistory: Record<string, FiveMinuteRound[]>;  // key = `${asset}-${duration}`
   searchResults: Market[];
   selectedMarket: Market | null;
   searchQuery: string;
   isLoadingMarkets: boolean;
-  marketCategory: 'popular' | 'crypto' | 'btc' | 'search';
+  marketCategory: 'popular' | 'crypto' | 'btc' | '5m' | 'search';
 
   // Orderbook
   orderbooks: Record<string, OrderbookData>;
@@ -95,6 +115,7 @@ interface TradingStore {
   wsConnected: boolean;
   socket: Socket | null;
   pollingInterval: ReturnType<typeof setInterval> | null;
+  fiveMinuteRefreshInterval: ReturnType<typeof setInterval> | null;
 
   // UI
   showOrderTicket: boolean;
@@ -105,11 +126,13 @@ interface TradingStore {
   setPopularMarkets: (markets: Market[]) => void;
   setCryptoMarkets: (markets: Market[]) => void;
   setBtcMarkets: (markets: Market[]) => void;
+  setFiveMinuteMarkets: (markets: Market[]) => void;
+  setFiveMinuteHistory: (key: string, rounds: FiveMinuteRound[]) => void;
   setSearchResults: (markets: Market[]) => void;
   selectMarket: (market: Market) => void;
   setSearchQuery: (q: string) => void;
   setIsLoadingMarkets: (loading: boolean) => void;
-  setMarketCategory: (cat: 'popular' | 'crypto' | 'btc' | 'search') => void;
+  setMarketCategory: (cat: 'popular' | 'crypto' | 'btc' | '5m' | 'search') => void;
   updateOrderbook: (assetId: string, data: OrderbookData) => void;
   addPricePoint: (assetId: string, point: PricePoint) => void;
   setPriceHistory: (assetId: string, points: PricePoint[]) => void;
@@ -126,17 +149,23 @@ interface TradingStore {
   setOrderType: (type: 'GTC' | 'GTD' | 'FOK' | 'FAK') => void;
   startPolling: (tokenIds: string[]) => void;
   stopPolling: () => void;
+  startFiveMinuteRefresh: () => void;
+  stopFiveMinuteRefresh: () => void;
+  fetchFiveMinuteHistory: (asset: 'btc' | 'eth' | 'sol', duration: number) => Promise<void>;
+  refreshSelectedFiveMinuteMarket: () => Promise<void>;
 }
 
 export const useTradingStore = create<TradingStore>((set, get) => ({
   popularMarkets: [],
   cryptoMarkets: [],
   btcMarkets: [],
+  fiveMinuteMarkets: [],
+  fiveMinuteHistory: {},
   searchResults: [],
   selectedMarket: null,
   searchQuery: '',
   isLoadingMarkets: false,
-  marketCategory: 'btc', // Default to BTC tab
+  marketCategory: '5m', // Default to 5M tab — Polymarket's fastest, highest-priority markets
   orderbooks: {},
   selectedTokenId: null,
   priceHistory: {},
@@ -147,6 +176,7 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   wsConnected: false,
   socket: null,
   pollingInterval: null,
+  fiveMinuteRefreshInterval: null,
   showOrderTicket: false,
   orderSide: 'BUY',
   orderType: 'GTC',
@@ -154,6 +184,9 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   setPopularMarkets: (markets) => set({ popularMarkets: markets }),
   setCryptoMarkets: (markets) => set({ cryptoMarkets: markets }),
   setBtcMarkets: (markets) => set({ btcMarkets: markets }),
+  setFiveMinuteMarkets: (markets) => set({ fiveMinuteMarkets: markets }),
+  setFiveMinuteHistory: (key, rounds) =>
+    set((s) => ({ fiveMinuteHistory: { ...s.fiveMinuteHistory, [key]: rounds } })),
   setSearchResults: (markets) => set({ searchResults: markets }),
   selectMarket: (market) => {
     const prev = get().selectedMarket;
@@ -162,6 +195,11 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
       get().stopPolling();
     }
     set({ selectedMarket: market, showOrderTicket: false, priceHistory: {} });
+
+    // If selecting a 5M market, fetch its history strip immediately
+    if (market.asset && market.durationMinutes) {
+      get().fetchFiveMinuteHistory(market.asset, market.durationMinutes);
+    }
   },
   setSearchQuery: (q) => set({ searchQuery: q }),
   setIsLoadingMarkets: (loading) => set({ isLoadingMarkets: loading }),
@@ -287,6 +325,8 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   setOrderType: (type) => set({ orderType: type }),
 
   // REST polling fallback — works without WS relay (Vercel serverless)
+  // For 5M/15M markets, polls faster (1.5s) because rounds resolve in 5 minutes
+  // and price discovery is intense near the end of each round.
   startPolling: (tokenIds: string[]) => {
     // Don't poll if WS is connected
     if (get().wsConnected) return;
@@ -296,19 +336,25 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
     const existing = get().pollingInterval;
     if (existing) clearInterval(existing);
 
+    // Determine poll interval: 5M/15M markets resolve fast — poll every 1.5s.
+    // Other markets (daily, popular) keep the 3s cadence to be gentle on the API.
+    const market = get().selectedMarket;
+    const isFastMarket = !!(market?.durationMinutes && market.durationMinutes <= 15);
+    const intervalMs = isFastMarket ? 1500 : 3000;
+
     // Initial fetch
     fetchPollingData(tokenIds);
 
-    // Poll every 3 seconds
+    // Poll at the chosen cadence
     const interval = setInterval(() => {
       // Re-check token IDs from current market selection
-      const market = get().selectedMarket;
-      if (!market?.clobTokenIds?.length) {
+      const m = get().selectedMarket;
+      if (!m?.clobTokenIds?.length) {
         get().stopPolling();
         return;
       }
-      fetchPollingData(market.clobTokenIds);
-    }, 3000);
+      fetchPollingData(m.clobTokenIds);
+    }, intervalMs);
 
     set({ pollingInterval: interval });
   },
@@ -318,6 +364,117 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
     if (existing) {
       clearInterval(existing);
       set({ pollingInterval: null });
+    }
+  },
+
+  // Auto-refresh the 5M market list every 20 seconds so new rounds appear
+  // as old ones resolve. The deterministic-slug approach means a brand-new
+  // round may take ~30s to be indexed after its start time, so we re-fetch
+  // the full list on a 20s cadence (cheap — only 6 slug lookups).
+  startFiveMinuteRefresh: () => {
+    const existing = get().fiveMinuteRefreshInterval;
+    if (existing) return; // already running
+
+    const tick = async () => {
+      try {
+        const res = await fetch('/api/polymarket/5m');
+        if (!res.ok) return;
+        const data = await res.json();
+        const next: Market[] = data.fiveMinute || [];
+        if (next.length === 0) return;
+
+        const prev = get().fiveMinuteMarkets;
+        set({ fiveMinuteMarkets: next });
+
+        // If a 5M market is currently selected and its round just transitioned,
+        // auto-select the new live round for the same asset/duration so the
+        // user sees the next round seamlessly without manual clicks.
+        const selected = get().selectedMarket;
+        if (selected?.asset && selected?.durationMinutes) {
+          const replacement = next.find(
+            (m) => m.asset === selected.asset && m.durationMinutes === selected.durationMinutes,
+          );
+          if (replacement && replacement.id !== selected.id) {
+            // Round transitioned — refresh history strip then swap selection
+            get().fetchFiveMinuteHistory(selected.asset, selected.durationMinutes);
+            // Preserve nothing — the new round is a different market entirely
+            get().selectMarket(replacement);
+          } else if (replacement) {
+            // Same round still live — update prices in-place without losing chart history
+            set({
+              selectedMarket: {
+                ...selected,
+                outcomePrices: replacement.outcomePrices,
+                volume24hr: replacement.volume24hr,
+                volume: replacement.volume,
+                liquidity: replacement.liquidity,
+                liquidityNum: replacement.liquidityNum,
+                volumeNum: replacement.volumeNum,
+              },
+            });
+          }
+        }
+      } catch (err) {
+        // Silent — will retry next tick
+      }
+    };
+
+    // Run immediately, then every 20s
+    tick();
+    const interval = setInterval(tick, 20000);
+    set({ fiveMinuteRefreshInterval: interval });
+  },
+
+  stopFiveMinuteRefresh: () => {
+    const existing = get().fiveMinuteRefreshInterval;
+    if (existing) {
+      clearInterval(existing);
+      set({ fiveMinuteRefreshInterval: null });
+    }
+  },
+
+  // Fetch the previous N resolved rounds for an asset/duration.
+  // Stored in fiveMinuteHistory[`${asset}-${duration}`] for the header strip.
+  fetchFiveMinuteHistory: async (asset, duration) => {
+    try {
+      const res = await fetch(
+        `/api/polymarket/5m/history?asset=${asset}&duration=${duration}&count=10`,
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const rounds: FiveMinuteRound[] = (data.rounds || []).map((r: any) => ({
+        id: r.id,
+        question: r.question,
+        slug: r.slug,
+        endDate: r.endDate,
+        roundStart: r.roundStart ?? null,
+        roundEnd: r.roundEnd ?? null,
+        outcomePrices: r.outcomePrices ?? [],
+        winner: r.winner ?? null,
+        closed: !!r.closed,
+      }));
+      get().setFiveMinuteHistory(`${asset}-${duration}`, rounds);
+    } catch {
+      // Silent
+    }
+  },
+
+  // Re-fetch the currently-selected 5M market's fresh prices from Gamma
+  // (used for the chart when the orderbook is thin and we need a fresher price).
+  refreshSelectedFiveMinuteMarket: async () => {
+    const m = get().selectedMarket;
+    if (!m?.asset || !m?.durationMinutes || !m?.slug) return;
+    try {
+      const res = await fetch(`/api/polymarket/refresh?slug=${encodeURIComponent(m.slug)}`);
+      if (!res.ok) return;
+      const fresh = await res.json();
+      if (fresh.outcomePrices && fresh.outcomePrices.length > 0) {
+        set({
+          selectedMarket: { ...m, outcomePrices: fresh.outcomePrices },
+        });
+      }
+    } catch {
+      // Silent
     }
   },
 }));

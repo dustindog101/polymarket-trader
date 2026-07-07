@@ -10,6 +10,9 @@ import {
   ShoppingCart,
   ChevronRight,
   CheckCircle2,
+  Timer,
+  Bitcoin,
+  Coins,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -56,13 +59,47 @@ function formatEndDate(dateStr: string): string {
   }
 }
 
+/** Live MM:SS countdown that ticks every second. */
+function useLiveCountdown(roundEndSeconds: number | null | undefined) {
+  const [state, setState] = useState({ text: '--:--', secondsLeft: 0, expired: false });
+  useEffect(() => {
+    if (!roundEndSeconds) {
+      setState({ text: '--:--', secondsLeft: 0, expired: false });
+      return;
+    }
+    const tick = () => {
+      const remaining = roundEndSeconds * 1000 - Date.now();
+      if (remaining <= 0) {
+        setState({ text: 'Resolving…', secondsLeft: 0, expired: true });
+        return;
+      }
+      const totalSec = Math.floor(remaining / 1000);
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      setState({ text: `${m}:${s.toString().padStart(2, '0')}`, secondsLeft: totalSec, expired: false });
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [roundEndSeconds]);
+  return state;
+}
+
+const ASSET_META: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
+  btc: { label: 'BTC', icon: <Bitcoin className="size-4" />, color: 'text-orange-400' },
+  eth: { label: 'ETH', icon: <Coins className="size-4" />, color: 'text-indigo-300' },
+  sol: { label: 'SOL', icon: <Coins className="size-4" />, color: 'text-emerald-400' },
+};
+
 // ─── Component ───────────────────────────────────────────────────────
 
 export function MarketHeader() {
-  const { selectedMarket, setShowOrderTicket, priceHistory, selectedTokenId } =
+  const { selectedMarket, setShowOrderTicket, priceHistory, selectedTokenId, fiveMinuteHistory } =
     useTradingStore();
 
   const [countdown, setCountdown] = useState({ text: '', expired: false });
+  const isFiveMinute = !!(selectedMarket?.asset && selectedMarket?.durationMinutes);
+  const liveCountdown = useLiveCountdown(selectedMarket?.roundEnd);
 
   useEffect(() => {
     if (!selectedMarket?.endDate) return;
@@ -100,7 +137,7 @@ export function MarketHeader() {
   // ─── Empty state ───────────────────────────────────────────────
   if (!selectedMarket) {
     return (
-      <header className="flex h-16 items-center border-b border-zinc-800 bg-zinc-950/80 px-4 lg:px-6">
+      <header className="flex h-16 items-center border-b border-zinc-800 bg-zinc-950/80 px-4">
         <div className="flex items-center gap-3 text-zinc-600">
           <BarChart3 className="size-5" />
           <span className="text-sm">Select a market to start trading</span>
@@ -113,12 +150,34 @@ export function MarketHeader() {
   const noPrice = parseFloat(selectedMarket.outcomePrices?.[1] ?? '0');
   const isResolved = selectedMarket.closed || !selectedMarket.active;
 
+  // 5M-specific metadata
+  const assetMeta = selectedMarket.asset ? ASSET_META[selectedMarket.asset] : null;
+  const historyKey = selectedMarket.asset && selectedMarket.durationMinutes
+    ? `${selectedMarket.asset}-${selectedMarket.durationMinutes}`
+    : null;
+  const history = historyKey ? (fiveMinuteHistory[historyKey] ?? []) : [];
+  const secondsLeft = liveCountdown.secondsLeft;
+  const isUrgent = isFiveMinute && secondsLeft > 0 && secondsLeft <= 60;
+  const isVeryUrgent = isFiveMinute && secondsLeft > 0 && secondsLeft <= 15;
+
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/80 px-4 py-3 lg:px-6">
       {/* Top row: title + place order */}
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
+            {assetMeta && (
+              <Badge
+                variant="outline"
+                className={`shrink-0 border-zinc-700 bg-zinc-900 ${assetMeta.color} text-xs gap-1`}
+              >
+                {assetMeta.icon}
+                {assetMeta.label}
+                {selectedMarket.durationMinutes && (
+                  <span className="text-zinc-500 ml-1">{selectedMarket.durationMinutes}m</span>
+                )}
+              </Badge>
+            )}
             <h1 className="text-base font-semibold text-zinc-100 truncate max-w-[600px]">
               {selectedMarket.question}
             </h1>
@@ -159,10 +218,11 @@ export function MarketHeader() {
 
       {/* Price + Meta row */}
       <div className="mt-3 flex flex-wrap items-end gap-x-6 gap-y-2">
-        {/* YES price */}
+        {/* YES / UP price */}
         <div className="flex items-center gap-2">
           <div className="rounded-md bg-emerald-500/15 px-3 py-1.5 border border-emerald-500/20">
-            <div className="text-[10px] uppercase tracking-wider text-emerald-500/80 font-medium">
+            <div className="text-[10px] uppercase tracking-wider text-emerald-500/80 font-medium flex items-center gap-1">
+              {isFiveMinute ? <ArrowUp className="size-2.5" /> : null}
               {selectedMarket.outcomes?.[0] ?? 'Yes'}
             </div>
             <div className="text-lg font-bold text-emerald-400 font-mono tabular-nums leading-tight">
@@ -185,10 +245,11 @@ export function MarketHeader() {
           )}
         </div>
 
-        {/* NO price */}
+        {/* NO / DOWN price */}
         <div className="flex items-center gap-2">
           <div className="rounded-md bg-red-500/15 px-3 py-1.5 border border-red-500/20">
-            <div className="text-[10px] uppercase tracking-wider text-red-500/80 font-medium">
+            <div className="text-[10px] uppercase tracking-wider text-red-500/80 font-medium flex items-center gap-1">
+              {isFiveMinute ? <ArrowDown className="size-2.5" /> : null}
               {selectedMarket.outcomes?.[1] ?? 'No'}
             </div>
             <div className="text-lg font-bold text-red-400 font-mono tabular-nums leading-tight">
@@ -196,6 +257,37 @@ export function MarketHeader() {
             </div>
           </div>
         </div>
+
+        {/* 5M round countdown — prominent when on a 5M market */}
+        {isFiveMinute && (
+          <div
+            className={`flex items-center gap-2 rounded-md border px-3 py-1.5 ${
+              isVeryUrgent
+                ? 'border-red-500/40 bg-red-500/10 animate-pulse'
+                : isUrgent
+                  ? 'border-amber-500/40 bg-amber-500/10'
+                  : 'border-zinc-700 bg-zinc-900/60'
+            }`}
+          >
+            <Timer className={`size-3.5 ${isVeryUrgent ? 'text-red-400' : isUrgent ? 'text-amber-400' : 'text-zinc-400'}`} />
+            <div className="flex flex-col">
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-medium">
+                Round ends in
+              </div>
+              <div
+                className={`text-lg font-bold font-mono tabular-nums leading-tight ${
+                  isVeryUrgent
+                    ? 'text-red-400'
+                    : isUrgent
+                      ? 'text-amber-400'
+                      : 'text-zinc-100'
+                }`}
+              >
+                {liveCountdown.text}
+              </div>
+            </div>
+          </div>
+        )}
 
         <Separator orientation="vertical" className="h-10 bg-zinc-800 hidden sm:block" />
 
@@ -211,7 +303,7 @@ export function MarketHeader() {
             </div>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="bg-zinc-900 border-zinc-700 text-zinc-300 text-xs">
-            24h trading volume
+            {isFiveMinute ? 'Round volume' : '24h trading volume'}
           </TooltipContent>
         </Tooltip>
 
@@ -231,33 +323,71 @@ export function MarketHeader() {
           </TooltipContent>
         </Tooltip>
 
-        {/* End date + countdown */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="flex items-center gap-1.5 text-xs text-zinc-500">
-              <Clock className="size-3.5" />
-              <span>{formatEndDate(selectedMarket.endDate)}</span>
-              {!countdown.expired && countdown.text && (
-                <>
-                  <Separator orientation="vertical" className="h-3 bg-zinc-700 mx-0.5" />
+        {/* End date + countdown (non-5M markets) */}
+        {!isFiveMinute && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-1.5 text-xs text-zinc-500">
+                <Clock className="size-3.5" />
+                <span>{formatEndDate(selectedMarket.endDate)}</span>
+                {!countdown.expired && countdown.text && (
+                  <>
+                    <Separator orientation="vertical" className="h-3 bg-zinc-700 mx-0.5" />
+                    <span
+                      className={`font-mono tabular-nums ${
+                        countdown.text.includes('m') && !countdown.text.includes('d') && !countdown.text.includes('h')
+                          ? 'text-amber-400'
+                          : 'text-zinc-400'
+                      }`}
+                    >
+                      {countdown.text}
+                    </span>
+                  </>
+                )}
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="bg-zinc-900 border-zinc-700 text-zinc-300 text-xs">
+              Market end date
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+
+      {/* 5M round history strip — last 10 outcomes as compact ↑↓ badges */}
+      {isFiveMinute && history.length > 0 && (
+        <div className="mt-2.5 flex items-center gap-1.5 text-xs text-zinc-500">
+          <span className="uppercase tracking-wider text-[10px]">Last {history.length}:</span>
+          <div className="flex items-center gap-0.5">
+            {history.slice(0, 10).map((round, i) => (
+              <Tooltip key={round.id ?? i}>
+                <TooltipTrigger asChild>
                   <span
-                    className={`font-mono tabular-nums ${
-                      countdown.text.includes('m') && !countdown.text.includes('d') && !countdown.text.includes('h')
-                        ? 'text-amber-400'
-                        : 'text-zinc-400'
+                    className={`inline-flex items-center justify-center size-5 rounded text-[10px] font-bold ${
+                      round.winner === 'up'
+                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                        : round.winner === 'down'
+                          ? 'bg-red-500/15 text-red-400 border border-red-500/30'
+                          : 'bg-zinc-800 text-zinc-600 border border-zinc-700'
                     }`}
                   >
-                    {countdown.text}
+                    {round.winner === 'up' ? (
+                      <ArrowUp className="size-2.5" />
+                    ) : round.winner === 'down' ? (
+                      <ArrowDown className="size-2.5" />
+                    ) : (
+                      '?'
+                    )}
                   </span>
-                </>
-              )}
-            </div>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="bg-zinc-900 border-zinc-700 text-zinc-300 text-xs">
-            Market end date
-          </TooltipContent>
-        </Tooltip>
-      </div>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="bg-zinc-900 border-zinc-700 text-zinc-300 text-xs">
+                  {round.question}<br />
+                  Resolved: {round.winner === 'up' ? 'Up' : round.winner === 'down' ? 'Down' : 'Unknown'}
+                </TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
+        </div>
+      )}
     </header>
   );
 }

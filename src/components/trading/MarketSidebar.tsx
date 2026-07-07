@@ -1,11 +1,11 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, TrendingUp, Wifi, WifiOff, Clock, X, Bitcoin, Coins } from 'lucide-react';
+import { Search, TrendingUp, Wifi, WifiOff, Clock, X, Bitcoin, Coins, Timer, ArrowUp, ArrowDown } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
 import { useTradingStore, type Market } from '@/stores/trading';
@@ -36,6 +36,38 @@ function getTimeRemaining(endDate: string): string {
   return `${minutes}m`;
 }
 
+/** Live MM:SS countdown for short markets (5M / 15M). Updates every second. */
+function useLiveCountdown(roundEndSeconds: number | null | undefined): string {
+  const [text, setText] = useState('--:--');
+  useEffect(() => {
+    if (!roundEndSeconds) {
+      setText('--:--');
+      return;
+    }
+    const tick = () => {
+      const remaining = roundEndSeconds * 1000 - Date.now();
+      if (remaining <= 0) {
+        setText('Resolving…');
+        return;
+      }
+      const totalSec = Math.floor(remaining / 1000);
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      setText(`${m}:${s.toString().padStart(2, '0')}`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [roundEndSeconds]);
+  return text;
+}
+
+const ASSET_META: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
+  btc: { label: 'BTC', icon: <Bitcoin className="size-3" />, color: 'text-orange-400' },
+  eth: { label: 'ETH', icon: <Coins className="size-3" />, color: 'text-indigo-300' },
+  sol: { label: 'SOL', icon: <Coins className="size-3" />, color: 'text-emerald-400' },
+};
+
 // ─── Component ───────────────────────────────────────────────────────
 
 export function MarketSidebar() {
@@ -43,6 +75,7 @@ export function MarketSidebar() {
     popularMarkets,
     cryptoMarkets,
     btcMarkets,
+    fiveMinuteMarkets,
     searchResults,
     selectedMarket,
     searchQuery,
@@ -54,6 +87,7 @@ export function MarketSidebar() {
     setMarketCategory,
     setSearchResults,
     setIsLoadingMarkets,
+    fetchFiveMinuteHistory,
   } = useTradingStore();
 
   const [localQuery, setLocalQuery] = useState(searchQuery);
@@ -102,27 +136,137 @@ export function MarketSidebar() {
     setLocalQuery('');
     setSearchQuery('');
     setSearchResults([]);
-    setMarketCategory('btc');
+    setMarketCategory('5m');
   }, [setSearchQuery, setSearchResults, setMarketCategory]);
 
   // Select market — orderbook fetching and WS subscription handled by main page
   const handleSelectMarket = useCallback(
     (market: Market) => {
       selectMarket(market);
+      // For 5M markets, kick off history-strip fetch (the store does this too,
+      // but doing it here gives the user immediate visual feedback)
+      if (market.asset && market.durationMinutes) {
+        fetchFiveMinuteHistory(market.asset, market.durationMinutes);
+      }
     },
-    [selectMarket],
+    [selectMarket, fetchFiveMinuteHistory],
   );
 
   const isSearching = searchQuery.trim().length > 0;
   const displayMarkets = isSearching
     ? searchResults
-    : marketCategory === 'btc'
-      ? btcMarkets
-      : marketCategory === 'crypto'
-        ? cryptoMarkets
-        : popularMarkets;
+    : marketCategory === '5m'
+      ? fiveMinuteMarkets
+      : marketCategory === 'btc'
+        ? btcMarkets
+        : marketCategory === 'crypto'
+          ? cryptoMarkets
+          : popularMarkets;
 
-  // ─── Market Card ─────────────────────────────────────────────────
+  // ─── 5M Market Card (special — shows live countdown + last round outcome) ──
+  function FiveMinuteMarketCard({ market }: { market: Market }) {
+    const isSelected = selectedMarket?.id === market.id;
+    const yesPrice = parseFloat(market.outcomePrices?.[0] ?? '0');
+    const noPrice = parseFloat(market.outcomePrices?.[1] ?? '0');
+    const vol = market.volumeNum ?? parseFloat(market.volume24hr ?? market.volume ?? '0');
+    const countdown = useLiveCountdown(market.roundEnd);
+    const asset = market.asset ?? 'btc';
+    const meta = ASSET_META[asset] ?? ASSET_META.btc;
+    const duration = market.durationMinutes ?? 5;
+    const secondsLeft = market.roundEnd ? market.roundEnd * 1000 - Date.now() : 0;
+    const isUrgent = secondsLeft > 0 && secondsLeft <= 60_000; // last minute
+    const isVeryUrgent = secondsLeft > 0 && secondsLeft <= 15_000; // last 15s
+
+    // Subscribe to history updates for this asset+duration
+    const historyKey = `${asset}-${duration}`;
+    const history = useTradingStore((s) => s.fiveMinuteHistory[historyKey]) ?? [];
+    const lastRound = history[0];
+
+    return (
+      <button
+        type="button"
+        onClick={() => handleSelectMarket(market)}
+        className={`
+          w-full text-left rounded-lg border p-3 transition-all duration-150
+          hover:bg-zinc-800/60
+          ${isSelected ? 'border-emerald-500/60 bg-zinc-800/70 shadow-[0_0_12px_rgba(16,185,129,0.08)]' : 'border-zinc-800 bg-zinc-900/50'}
+        `}
+      >
+        {/* Top: asset + duration + countdown */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className={`flex items-center gap-1 font-semibold text-xs ${meta.color}`}>
+              {meta.icon}
+              {meta.label}
+            </span>
+            <Badge
+              variant="outline"
+              className="shrink-0 border-zinc-700 bg-zinc-900 text-zinc-400 text-[10px] px-1.5 py-0 font-mono"
+            >
+              {duration}m
+            </Badge>
+            <span className="text-[10px] text-zinc-600 truncate">Up or Down</span>
+          </div>
+          <div
+            className={`font-mono tabular-nums text-sm font-bold ${
+              isVeryUrgent
+                ? 'text-red-400 animate-pulse'
+                : isUrgent
+                  ? 'text-amber-400'
+                  : 'text-zinc-200'
+            }`}
+          >
+            {countdown}
+          </div>
+        </div>
+
+        {/* Prices */}
+        <div className="mt-2 flex items-center gap-2">
+          <Badge
+            className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 text-xs font-mono"
+            variant="outline"
+          >
+            <ArrowUp className="size-2.5 mr-0.5" />
+            UP {(yesPrice * 100).toFixed(1)}¢
+          </Badge>
+          <Badge
+            className="bg-red-500/15 text-red-400 border-red-500/30 text-xs font-mono"
+            variant="outline"
+          >
+            <ArrowDown className="size-2.5 mr-0.5" />
+            DN {(noPrice * 100).toFixed(1)}¢
+          </Badge>
+        </div>
+
+        {/* Footer: last round outcome + volume */}
+        <div className="mt-1.5 flex items-center justify-between text-xs text-zinc-500">
+          <span className="flex items-center gap-1">
+            {lastRound?.winner ? (
+              <>
+                <span className="text-zinc-600">Last:</span>
+                {lastRound.winner === 'up' ? (
+                  <span className="text-emerald-400 flex items-center">
+                    <ArrowUp className="size-2.5" />UP
+                  </span>
+                ) : (
+                  <span className="text-red-400 flex items-center">
+                    <ArrowDown className="size-2.5" />DN
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-zinc-600">New round</span>
+            )}
+          </span>
+          <span>
+            Vol: <span className="text-zinc-400">{formatCompactVolume(vol)}</span>
+          </span>
+        </div>
+      </button>
+    );
+  }
+
+  // ─── Standard Market Card (BTC daily / Crypto / Hot) ──────────────
   function MarketCard({ market }: { market: Market }) {
     const isSelected = selectedMarket?.id === market.id;
     const resolvingSoon = isResolvingSoon(market.endDate);
@@ -232,9 +376,16 @@ export function MarketSidebar() {
         ) : (
           <Tabs
             value={marketCategory}
-            onValueChange={(v) => setMarketCategory(v as 'popular' | 'crypto' | 'btc' | 'search')}
+            onValueChange={(v) => setMarketCategory(v as '5m' | 'popular' | 'crypto' | 'btc' | 'search')}
           >
             <TabsList className="h-8 w-full bg-zinc-900 border border-zinc-800 rounded-lg">
+              <TabsTrigger
+                value="5m"
+                className="flex-1 text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-emerald-400 rounded-md gap-1"
+              >
+                <Timer className="size-3" />
+                5M
+              </TabsTrigger>
               <TabsTrigger
                 value="btc"
                 className="flex-1 text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-orange-400 rounded-md gap-1"
@@ -272,8 +423,16 @@ export function MarketSidebar() {
             ))
           ) : displayMarkets.length === 0 ? (
             <div className="py-12 text-center text-sm text-zinc-600">
-              {isSearching ? 'No markets found' : 'No markets available'}
+              {marketCategory === '5m'
+                ? 'Loading live 5M rounds…'
+                : isSearching
+                  ? 'No markets found'
+                  : 'No markets available'}
             </div>
+          ) : marketCategory === '5m' ? (
+            displayMarkets.map((market) => (
+              <FiveMinuteMarketCard key={market.id} market={market} />
+            ))
           ) : (
             displayMarkets.map((market) => (
               <MarketCard key={market.id} market={market} />
@@ -291,7 +450,7 @@ export function MarketSidebar() {
           }`}
         />
         <span className="text-xs text-zinc-400">
-          {wsConnected ? 'WebSocket Live' : 'REST Polling (3s)'}
+          {wsConnected ? 'WebSocket Live' : marketCategory === '5m' ? 'REST Polling (1.5s)' : 'REST Polling (3s)'}
         </span>
         {wsConnected ? (
           <Wifi className="ml-auto size-3.5 text-emerald-500" />
