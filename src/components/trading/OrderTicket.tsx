@@ -45,6 +45,8 @@ export function OrderTicket() {
     setOrderType,
     selectedTokenId,
     balance,
+    orderPrefill,
+    setOrderPrefill,
   } = useTradingStore();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -56,6 +58,22 @@ export function OrderTicket() {
     size: '',
     postOnly: false,
   });
+
+  // Apply prefill whenever the ticket opens with a prefill payload (from
+  // clicking an orderbook level or a quick-trade button). Clears the prefill
+  // after applying so it doesn't re-apply on subsequent opens.
+  React.useEffect(() => {
+    if (!showOrderTicket || !orderPrefill) return;
+    setForm((f) => ({
+      ...f,
+      price: orderPrefill.price !== undefined ? orderPrefill.price.toFixed(1) : f.price,
+      size: orderPrefill.size !== undefined ? String(orderPrefill.size) : f.size,
+      tokenId: orderPrefill.tokenId ?? f.tokenId,
+      side: orderPrefill.side ?? f.side,
+    }));
+    if (orderPrefill.side) setOrderSide(orderPrefill.side);
+    setOrderPrefill(null);
+  }, [showOrderTicket, orderPrefill, setOrderPrefill, setOrderSide]);
 
   // Sync store values
   const tokens = useMemo(() => {
@@ -286,6 +304,23 @@ export function OrderTicket() {
               onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
               className="border-zinc-800 bg-zinc-900/80 text-zinc-100 font-mono text-sm"
             />
+            {/* Quick price adjust — ±1¢ / ±5¢ from current */}
+            <div className="flex gap-1">
+              {[-5, -1, +1, +5].map((delta) => {
+                const current = parseFloat(form.price) || 0;
+                const next = Math.max(0, Math.min(100, current + delta));
+                return (
+                  <button
+                    key={delta}
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, price: next.toFixed(1) }))}
+                    className="flex-1 h-7 rounded text-[11px] font-mono bg-zinc-900 text-zinc-500 border border-zinc-800 hover:text-zinc-300 hover:border-zinc-700 transition-colors"
+                  >
+                    {delta > 0 ? `+${delta}` : delta}¢
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Size */}
@@ -300,6 +335,23 @@ export function OrderTicket() {
               onChange={(e) => setForm((f) => ({ ...f, size: e.target.value }))}
               className="border-zinc-800 bg-zinc-900/80 text-zinc-100 font-mono text-sm"
             />
+            {/* Quick-size presets */}
+            <div className="flex gap-1">
+              {[5, 10, 25, 50, 100].map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, size: String(s) }))}
+                  className={`flex-1 h-7 rounded text-[11px] font-mono transition-colors ${
+                    form.size === String(s)
+                      ? 'bg-zinc-700 text-zinc-100 border border-zinc-600'
+                      : 'bg-zinc-900 text-zinc-500 border border-zinc-800 hover:text-zinc-300 hover:border-zinc-700'
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Post-only */}

@@ -94,7 +94,7 @@ const ASSET_META: Record<string, { label: string; icon: React.ReactNode; color: 
 // ─── Component ───────────────────────────────────────────────────────
 
 export function MarketHeader() {
-  const { selectedMarket, setShowOrderTicket, priceHistory, selectedTokenId, fiveMinuteHistory } =
+  const { selectedMarket, setShowOrderTicket, priceHistory, selectedTokenId, fiveMinuteHistory, quickOpenTicket } =
     useTradingStore();
 
   const [countdown, setCountdown] = useState({ text: '', expired: false });
@@ -215,6 +215,54 @@ export function MarketHeader() {
           <ChevronRight className="size-3.5 ml-0.5" />
         </Button>
       </div>
+
+      {/* Quick-trade row for 5M markets — 1-click BUY UP / BUY DOWN at best ask */}
+      {isFiveMinute && selectedMarket.clobTokenIds?.length >= 2 && (
+        <div className="mt-2.5 flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-600 font-medium pr-1">Quick:</span>
+          <button
+            type="button"
+            onClick={() =>
+              quickOpenTicket({
+                tokenId: selectedMarket.clobTokenIds![0],
+                side: 'BUY',
+                price: yesPrice * 100,
+                size: 10,
+              })
+            }
+            className="
+              h-8 px-3 rounded-md bg-emerald-500/15 border border-emerald-500/30
+              text-emerald-400 text-xs font-semibold flex items-center gap-1
+              hover:bg-emerald-500/25 hover:border-emerald-500/50 transition-colors
+            "
+          >
+            <ArrowUp className="size-3.5" />
+            BUY UP @ {(yesPrice * 100).toFixed(1)}¢
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              quickOpenTicket({
+                tokenId: selectedMarket.clobTokenIds![1],
+                side: 'BUY',
+                price: noPrice * 100,
+                size: 10,
+              })
+            }
+            className="
+              h-8 px-3 rounded-md bg-red-500/15 border border-red-500/30
+              text-red-400 text-xs font-semibold flex items-center gap-1
+              hover:bg-red-500/25 hover:border-red-500/50 transition-colors
+            "
+          >
+            <ArrowDown className="size-3.5" />
+            BUY DOWN @ {(noPrice * 100).toFixed(1)}¢
+          </button>
+          <span className="text-[10px] text-zinc-600 ml-1">
+            Size 10 shares pre-set — adjust in ticket
+          </span>
+        </div>
+      )}
 
       {/* Price + Meta row */}
       <div className="mt-3 flex flex-wrap items-end gap-x-6 gap-y-2">

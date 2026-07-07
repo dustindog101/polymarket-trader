@@ -121,6 +121,10 @@ interface TradingStore {
   showOrderTicket: boolean;
   orderSide: 'BUY' | 'SELL';
   orderType: 'GTC' | 'GTD' | 'FOK' | 'FAK';
+  /** Prefilled price/size for the order ticket — set when user clicks an
+   * orderbook row. The OrderTicket reads this on open and clears it after
+   * applying. Lets users click a level → ticket opens already filled in. */
+  orderPrefill: { price?: number; size?: number; tokenId?: string; side?: 'BUY' | 'SELL' } | null;
 
   // Actions
   setPopularMarkets: (markets: Market[]) => void;
@@ -147,6 +151,9 @@ interface TradingStore {
   setShowOrderTicket: (show: boolean) => void;
   setOrderSide: (side: 'BUY' | 'SELL') => void;
   setOrderType: (type: 'GTC' | 'GTD' | 'FOK' | 'FAK') => void;
+  setOrderPrefill: (p: { price?: number; size?: number; tokenId?: string; side?: 'BUY' | 'SELL' } | null) => void;
+  /** Convenience: open the order ticket with everything pre-filled in one call. */
+  quickOpenTicket: (p: { price?: number; size?: number; tokenId?: string; side?: 'BUY' | 'SELL' }) => void;
   startPolling: (tokenIds: string[]) => void;
   stopPolling: () => void;
   startFiveMinuteRefresh: () => void;
@@ -180,6 +187,7 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   showOrderTicket: false,
   orderSide: 'BUY',
   orderType: 'GTC',
+  orderPrefill: null,
 
   setPopularMarkets: (markets) => set({ popularMarkets: markets }),
   setCryptoMarkets: (markets) => set({ cryptoMarkets: markets }),
@@ -323,6 +331,13 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   setShowOrderTicket: (show) => set({ showOrderTicket: show }),
   setOrderSide: (side) => set({ orderSide: side }),
   setOrderType: (type) => set({ orderType: type }),
+  setOrderPrefill: (p) => set({ orderPrefill: p }),
+  quickOpenTicket: (p) =>
+    set({
+      orderPrefill: p,
+      showOrderTicket: true,
+      ...(p.side ? { orderSide: p.side } : {}),
+    }),
 
   // REST polling fallback — works without WS relay (Vercel serverless)
   // For 5M/15M markets, polls every 1s because rounds resolve in 5 minutes

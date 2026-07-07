@@ -25,12 +25,14 @@ function BookRow({
   side,
   prevPriceRef,
   flashKey,
+  onClick,
 }: {
   level: BookLevel;
   maxSize: number;
   side: 'bid' | 'ask';
   prevPriceRef: React.MutableRefObject<Map<number, number>>;
   flashKey: number;
+  onClick: () => void;
 }) {
   const [flash, setFlash] = useState(false);
   const prevPrice = prevPriceRef.current.get(level.price);
@@ -47,31 +49,34 @@ function BookRow({
   const isBest = side === 'bid';
 
   return (
-    <div
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Click to ${side === 'bid' ? 'sell at' : 'buy at'} ${cents(level.price)}¢`}
       className={`
-        relative flex items-center justify-between px-2 py-[3px] text-xs font-mono tabular-nums transition-colors
-        ${flash ? (side === 'bid' ? 'bg-emerald-500/20' : 'bg-red-500/20') : 'hover:bg-zinc-800/40'}
+        relative w-full flex items-center justify-between px-2 py-[3px] text-xs font-mono tabular-nums transition-colors cursor-pointer
+        ${flash ? (side === 'bid' ? 'bg-emerald-500/20' : 'bg-red-500/20') : 'hover:bg-zinc-800/60'}
         ${isBest ? 'text-emerald-300' : 'text-zinc-400'}
       `}
     >
       {/* Depth bar */}
       <div
         className={`
-          absolute inset-y-0 right-0 transition-all duration-200
+          absolute inset-y-0 right-0 transition-all duration-200 pointer-events-none
           ${side === 'bid' ? 'bg-emerald-500/8' : 'bg-red-500/8'}
         `}
         style={{ width: `${pct}%` }}
       />
       <span className="relative z-10">{cents(level.price)}¢</span>
       <span className="relative z-10 text-zinc-500">{formatSize(level.size)}</span>
-    </div>
+    </button>
   );
 }
 
 // ─── Main component ──────────────────────────────────────────────
 
 export function OrderbookPanel() {
-  const { orderbooks, selectedTokenId, selectedMarket } = useTradingStore();
+  const { orderbooks, selectedTokenId, selectedMarket, quickOpenTicket, setSelectedTokenId } = useTradingStore();
   const flashCounter = useRef(0);
   const bidPrevRef = useRef<Map<number, number>>(new Map());
   const askPrevRef = useRef<Map<number, number>>(new Map());
@@ -196,6 +201,13 @@ export function OrderbookPanel() {
                     side="bid"
                     prevPriceRef={bidPrevRef}
                     flashKey={flashCounter.current}
+                    onClick={() =>
+                      quickOpenTicket({
+                        price: level.price * 100,
+                        tokenId: selectedTokenId ?? undefined,
+                        side: 'SELL',
+                      })
+                    }
                   />
                   {i === 0 && (
                     <div className="h-[1px] bg-emerald-500/20 mx-2" />
@@ -222,6 +234,13 @@ export function OrderbookPanel() {
                     side="ask"
                     prevPriceRef={askPrevRef}
                     flashKey={flashCounter.current}
+                    onClick={() =>
+                      quickOpenTicket({
+                        price: level.price * 100,
+                        tokenId: selectedTokenId ?? undefined,
+                        side: 'BUY',
+                      })
+                    }
                   />
                   {i === 0 && (
                     <div className="h-[1px] bg-red-500/20 mx-2" />
@@ -231,6 +250,33 @@ export function OrderbookPanel() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Outcome switcher + click hint */}
+      {selectedMarket?.tokens && selectedMarket.tokens.length > 1 && (
+        <div className="border-t border-zinc-800/60 p-1.5 flex items-center gap-1">
+          {selectedMarket.tokens.map((t) => (
+            <button
+              key={t.token_id}
+              type="button"
+              onClick={() => setSelectedTokenId(t.token_id)}
+              className={`
+                flex-1 h-7 rounded text-[10px] font-medium uppercase tracking-wider transition-colors
+                ${selectedTokenId === t.token_id
+                  ? (t.outcome?.toLowerCase().includes('up') || t.outcome?.toLowerCase().includes('yes')
+                      ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                      : 'bg-red-500/15 text-red-400 border border-red-500/30')
+                  : 'bg-zinc-900 text-zinc-500 border border-zinc-800 hover:text-zinc-300'
+                }
+              `}
+            >
+              {t.outcome}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="border-t border-zinc-800/40 px-2 py-1 text-[9px] text-zinc-600 text-center">
+        Click any level to prefill order ticket
       </div>
     </div>
   );
